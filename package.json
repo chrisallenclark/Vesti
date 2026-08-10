@@ -1,0 +1,26 @@
+{
+  "name": "vesti",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Evidence-driven AI investment and trading intelligence platform",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "npm@10.9.7",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "db:migrate": "npm run migrate -w @vesti/db",
+    "db:reset": "npm run reset -w @vesti/db",
+    "db:test": "npm run test -w @vesti/db",
+    "typecheck": "tsc --build --pretty",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
