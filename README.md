@@ -37,6 +37,31 @@ run against a database built from nothing.
 
 ## Quick start
 
+### Without a terminal
+
+Setting up from a laptop means a shell whose exported variables can disagree
+with its config file, which is where most of the failures came from. Running it
+on a clean runner removes that whole class of problem.
+
+Add three repository secrets — **Settings → Secrets and variables → Actions →
+New repository secret**:
+
+| Secret | Value |
+|---|---|
+| `DATABASE_URL` | the connection string from your database dashboard |
+| `ALPACA_API_KEY_ID` | starts with `PK` |
+| `ALPACA_API_SECRET_KEY` | the longer value, shown once when the key is created |
+
+Then **Actions → Set up and ingest → Run workflow**. It migrates and loads about
+ten years of prices, corporate actions and EDGAR fundamentals, and finishes by
+printing what actually landed. Tick `skip_market_data` to migrate before you
+have Alpaca keys.
+
+Secrets are encrypted, unreadable after saving, and masked in logs. They are the
+right home for these values — unlike `.env.example`, which is committed.
+
+### From a terminal
+
 Any Postgres will do — a hosted one (Neon, Supabase, RDS) or a local one. Have
 its connection string ready, plus free [Alpaca](https://alpaca.markets) API keys.
 

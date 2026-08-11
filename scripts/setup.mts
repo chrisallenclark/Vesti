@@ -284,7 +284,26 @@ async function main(): Promise<void> {
   say("Vesti setup");
   say("───────────");
 
-  // 1. The database URL: from .env, an argument, or asked for.
+  // `.env` is the record, but it does not exist on a fresh CI runner where the
+  // values arrive as environment variables instead. Seeding from the
+  // environment is what lets the same script run unattended; `.env` still wins
+  // where both exist, and `warnAboutShellOverrides` reports any disagreement.
+  const seed = (key: string): void => {
+    if (!env.has(key) && process.env[key]) env.set(key, process.env[key]);
+  };
+  for (const key of [
+    "DATABASE_URL",
+    "ALPACA_API_KEY_ID",
+    "ALPACA_API_SECRET_KEY",
+    "SEC_EDGAR_USER_AGENT",
+    "ALPACA_DATA_BASE_URL",
+    "ALPACA_TRADING_BASE_URL",
+    ...ROLES.map((r) => `VESTI_${r.toUpperCase()}_PASSWORD`),
+  ]) {
+    seed(key);
+  }
+
+  // 1. The database URL: from .env, the environment, an argument, or asked for.
   let ownerUrl = env.get("DATABASE_URL") ?? "";
   const fromArgv = process.argv.slice(2).find((a) => a.includes("://"));
   if (fromArgv) ownerUrl = fromArgv;
