@@ -10,7 +10,12 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { parseConnectionString, roleUrl, generatePassword } from "./setup.mts";
+import {
+  parseConnectionString,
+  roleUrl,
+  generatePassword,
+  directEndpoint,
+} from "./setup.mts";
 
 const NEON =
   "postgresql://neondb_owner:npg_secret@ep-proud-star-aymkjea9.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require";
@@ -123,5 +128,41 @@ describe("generatePassword", () => {
   it("does not repeat", () => {
     const seen = new Set(Array.from({ length: 500 }, generatePassword));
     assert.equal(seen.size, 500);
+  });
+});
+
+/**
+ * Neon hands out a `-pooler` hostname by default, and it is the wrong one for
+ * this. That endpoint is PgBouncer in transaction mode, so session-scoped work —
+ * creating roles, installing extensions, defining SECURITY DEFINER functions —
+ * either fails or lands against an arbitrary backend. Migrations do all three.
+ */
+describe("directEndpoint", () => {
+  const POOLED =
+    "postgresql://neondb_owner:pw@ep-proud-star-aymkjea9-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require&channel_binding=require";
+
+  it("drops the -pooler suffix so migrations get a real session", () => {
+    assert.equal(
+      new URL(directEndpoint(POOLED)).hostname,
+      "ep-proud-star-aymkjea9.c-5.us-east-2.aws.neon.tech",
+    );
+  });
+
+  it("keeps every connection option, including channel_binding", () => {
+    const url = new URL(directEndpoint(POOLED));
+    assert.equal(url.searchParams.get("sslmode"), "require");
+    assert.equal(url.searchParams.get("channel_binding"), "require");
+    assert.equal(url.username, "neondb_owner");
+    assert.equal(url.pathname, "/neondb");
+  });
+
+  it("leaves a non-pooled host alone", () => {
+    const direct = "postgresql://u:pw@ep-plain.c-5.aws.neon.tech/neondb?sslmode=require";
+    assert.equal(directEndpoint(direct), direct);
+  });
+
+  it("does not fire on a host that merely contains the word pooler", () => {
+    const url = "postgresql://u:pw@pooler-db.example.com/db";
+    assert.equal(new URL(directEndpoint(url)).hostname, "pooler-db.example.com");
   });
 });

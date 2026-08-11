@@ -206,11 +206,69 @@ async function syncRolePasswords(ownerUrl: string, passwords: Record<Role, strin
   }
 }
 
-function run(command: string, args: string[]): Promise<number> {
+/**
+ * Runs a child with the configuration this script just verified.
+ *
+ * The values are passed explicitly rather than left to the child's own `.env`
+ * loading, because the shell wins over `--env-file` and an exported variable
+ * therefore beats the file silently. That is not hypothetical: sourcing a `.env`
+ * (`set -a && . ./.env`) exports whatever it contained into the session, and a
+ * later `.env` fix does nothing for as long as that terminal stays open. The
+ * parent connects with the string it was given and succeeds, the child inherits
+ * the stale export and fails — two different databases, one command, and an
+ * error naming a host nobody typed.
+ *
+ * Passing them down means the connection proven a moment ago is the connection
+ * used, whatever the environment thinks.
+ */
+function run(command: string, args: string[], env: Env): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(command, args, { cwd: ROOT, stdio: "inherit", shell: false });
+    const child = spawn(command, args, {
+      cwd: ROOT,
+      stdio: "inherit",
+      shell: false,
+      env: { ...process.env, ...Object.fromEntries(env) },
+    });
     child.on("close", (code) => resolve(code ?? 1));
   });
+}
+
+/**
+ * Reports environment variables that would override `.env`, and what they hide.
+ *
+ * Unsetting them is left to the operator: this process cannot change its
+ * parent's shell, and quietly ignoring them here while every other command in
+ * the repo still obeys them would trade one confusing inconsistency for another.
+ */
+function warnAboutShellOverrides(env: Env): void {
+  const conflicts = [...env.keys()].filter(
+    (key) => process.env[key] !== undefined && process.env[key] !== env.get(key),
+  );
+  if (conflicts.length === 0) return;
+
+  say();
+  say(bad(`  ! ${conflicts.length} variable(s) exported in this shell disagree with .env:`));
+  for (const key of conflicts) say(`      ${key}`);
+  say(dim("    Setup passes the correct values to everything it runs, so this run is fine."));
+  say(dim("    Other commands will still prefer the shell. To clear them:"));
+  say();
+  say(`      unset ${conflicts.join(" ")}`);
+}
+
+/**
+ * Neon's pooled endpoint is not safe for migrations.
+ *
+ * The `-pooler` host is PgBouncer in transaction mode, which multiplexes
+ * sessions and so cannot honour session-scoped state. Migrations here create
+ * roles, install extensions and define `SECURITY DEFINER` functions, and those
+ * either fail outright or land against an unpredictable backend. The direct
+ * endpoint is the same hostname without the suffix.
+ */
+export function directEndpoint(connectionString: string): string {
+  const url = new URL(connectionString);
+  if (!url.hostname.includes("-pooler.")) return connectionString;
+  url.hostname = url.hostname.replace("-pooler.", ".");
+  return url.toString();
 }
 
 // ── Main ─────────────────────────────────────────────────────────────────────
@@ -234,8 +292,12 @@ async function main(): Promise<void> {
   for (;;) {
     const parsed = ownerUrl ? parseConnectionString(ownerUrl) : { error: "" };
     if ("url" in parsed) {
-      ownerUrl = parsed.url.toString();
-      say(`  ${good("✓")} database ${dim(parsed.url.hostname)}`);
+      ownerUrl = directEndpoint(parsed.url.toString());
+      const pooled = ownerUrl !== parsed.url.toString();
+      say(`  ${good("✓")} database ${dim(new URL(ownerUrl).hostname)}`);
+      if (pooled) {
+        say(dim("    (switched off the -pooler endpoint: migrations need a direct session)"));
+      }
       break;
     }
     if (parsed.error) {
@@ -291,6 +353,7 @@ async function main(): Promise<void> {
 
   await writeEnv(env);
   say(`  ${good("✓")} .env written`);
+  warnAboutShellOverrides(env);
   rl.close();
 
   // 4. Prove the connection before changing anything.
@@ -314,7 +377,7 @@ async function main(): Promise<void> {
   say();
   say("Applying migrations");
   say("───────────────────");
-  if ((await run("npm", ["run", "migrate", "-w", "@vesti/db"])) !== 0) {
+  if ((await run("npm", ["run", "migrate", "-w", "@vesti/db"], env)) !== 0) {
     say(bad("  ✗ migrations failed — nothing after this will work. Output above."));
     process.exitCode = 1;
     return;
@@ -334,7 +397,7 @@ async function main(): Promise<void> {
   const sync = await run("npm", [
     "run", "ingest", "-w", "@vesti/ingest", "--",
     "sync", "--universe", "starter", "--from", "2016-01-01",
-  ]);
+  ], env);
   if (sync !== 0) {
     say(bad("  ✗ market data ingestion failed — see above."));
     say(dim("  A 401 means the Alpaca keys are wrong or were rotated after being pasted."));
@@ -347,7 +410,7 @@ async function main(): Promise<void> {
   say("────────────────────────────");
   const fundamentals = await run("npm", [
     "run", "ingest", "-w", "@vesti/ingest", "--", "fundamentals", "--universe", "starter",
-  ]);
+  ], env);
   if (fundamentals !== 0) {
     say(bad("  ✗ fundamentals ingestion failed — see above."));
     process.exitCode = 1;
