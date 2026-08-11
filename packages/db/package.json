@@ -5,9 +5,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "migrate": "tsx src/migrate.ts up",
-    "reset": "tsx src/migrate.ts reset",
-    "status": "tsx src/migrate.ts status",
+    "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts up",
+    "reset": "tsx --env-file-if-exists=../../.env src/migrate.ts reset",
+    "status": "tsx --env-file-if-exists=../../.env src/migrate.ts status",
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {

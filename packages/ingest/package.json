@@ -5,8 +5,8 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
-    "ingest": "tsx src/cli.ts",
-    "bars": "tsx src/cli.ts bars",
+    "ingest": "tsx --env-file-if-exists=../../.env src/cli.ts",
+    "bars": "tsx --env-file-if-exists=../../.env src/cli.ts bars",
     "test": "tsx --test src/*.test.ts"
   },
   "dependencies": {
