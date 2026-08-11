@@ -37,15 +37,45 @@ run against a database built from nothing.
 
 ## Quick start
 
+Any Postgres will do — a hosted one (Neon, Supabase, RDS) or a local one. Have
+its connection string ready, plus free [Alpaca](https://alpaca.markets) API keys.
+
+```bash
+npm install
+npm run setup
+```
+
+`setup` asks for the database connection string and the Alpaca keys, then does
+the rest: derives the four role URLs, generates and applies the role passwords,
+proves the connection, migrates, and ingests ten years of prices, corporate
+actions and EDGAR fundamentals. It is idempotent — run it again after rotating a
+credential and it repairs the rest. `npm run setup -- --no-ingest` stops after
+migrating.
+
+Real values go in `.env`, which is gitignored. **Never put them in
+`.env.example`** — that file is committed, and a credential that reaches a
+remote stays in the history even after it is deleted.
+
+<details>
+<summary>Doing it by hand</summary>
+
 ```bash
 service postgresql start
 createdb vesti
 
-cp .env.example .env      # fill in the four role passwords
+cp .env.example .env      # fill in DATABASE_URL and the four role passwords
 npm install
 npm run db:migrate
 npm run db:test           # 25 invariant assertions
 ```
+
+The role passwords in `.env` must match the roles in the database. Migration 005
+creates them behind `IF NOT EXISTS`, so it sets each password exactly once per
+cluster and silently ignores a later change — the mismatch surfaces much later as
+`password authentication failed`. `npm run setup` re-applies them on every run,
+which is the main reason to prefer it.
+
+</details>
 
 ---
 

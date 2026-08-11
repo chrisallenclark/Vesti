@@ -21,6 +21,6 @@
   // apps/web has its own config — Next needs DOM libs, JSX, and bundler
   // resolution, and folding those in here would silently relax the server
   // packages' settings too. `npm run typecheck` checks both.
-  "include": ["packages/**/*.ts"],
+  "include": ["packages/**/*.ts", "scripts/**/*.mts"],
   "exclude": ["node_modules", "dist", ".next", "apps"]
 }

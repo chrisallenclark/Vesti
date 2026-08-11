@@ -31,7 +31,7 @@ interface Captured {
 
 function providerWith(feed?: "iex" | "sip"): Captured {
   const urls: URL[] = [];
-  const fetchImpl = (async (input: URL | RequestInfo) => {
+  const fetchImpl = (async (input: Parameters<typeof fetch>[0]) => {
     urls.push(new URL(String(input)));
     return new Response(JSON.stringify({ bars: {}, next_page_token: null }), {
       status: 200,

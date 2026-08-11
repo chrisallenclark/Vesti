@@ -12,14 +12,16 @@
     "packages/*"
   ],
   "scripts": {
+    "setup": "tsx scripts/setup.mts",
     "db:migrate": "npm run migrate -w @vesti/db",
     "db:reset": "npm run reset -w @vesti/db",
     "db:test": "npm run test -w @vesti/db",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
-    "test": "npm run test --workspaces --if-present"
+    "test": "npm run test --workspaces --if-present && tsx --test scripts/*.test.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "pg": "^8.13.1",
     "playwright": "^1.62.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
