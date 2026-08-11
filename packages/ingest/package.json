@@ -5,6 +5,7 @@
   "type": "module",
   "main": "./src/index.ts",
   "scripts": {
+    "ingest": "tsx src/cli.ts",
     "bars": "tsx src/cli.ts bars",
     "test": "tsx --test src/*.test.ts"
   },

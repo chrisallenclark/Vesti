@@ -1,7 +1,13 @@
 /**
  * Ingestion CLI.
  *
- *   npm run bars -w @vesti/ingest -- --symbols NVDA,TSM --from 2015-01-01
+ *   npm run ingest -w @vesti/ingest -- sync --universe starter --from 2016-01-01
+ *   npm run ingest -w @vesti/ingest -- sync --symbols NVDA,TSM --from 2015-01-01
+ *
+ * Three commands. `sync` is the one to use: bars and corporate actions are only
+ * meaningful together. Bars alone give a series with unexplained 75% overnight
+ * collapses in it; actions alone have no securities to attach to. `bars` and
+ * `actions` exist separately for backfilling one without re-pulling the other.
  *
  * Connects as `vesti_research`, which can write market data and evidence but
  * has no write path to orders, fills, or lots. Ingestion runs unattended; it
@@ -10,6 +16,12 @@
 import pg from "pg";
 import { AlpacaProvider } from "./alpaca.ts";
 import { ingestDailyBars } from "./bars.ts";
+import { ingestCorporateActions } from "./actions.ts";
+import { resolveUniverse } from "./universe.ts";
+import type { MarketDataProvider } from "./provider.ts";
+
+type Command = "bars" | "actions" | "sync";
+const COMMANDS: readonly Command[] = ["bars", "actions", "sync"];
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -20,15 +32,79 @@ function today(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+function resolveSymbols(): string[] {
+  const universe = arg("universe");
+  if (universe) return [...resolveUniverse(universe).symbols];
+
+  const symbols = (arg("symbols") ?? "")
+    .split(",")
+    .map((s) => s.trim().toUpperCase())
+    .filter(Boolean);
+  if (symbols.length === 0) {
+    throw new Error("Pass --symbols NVDA,TSM or --universe starter");
+  }
+  return symbols;
+}
+
+async function runBars(
+  client: pg.PoolClient,
+  provider: MarketDataProvider,
+  symbols: readonly string[],
+  from: string,
+  to: string,
+): Promise<void> {
+  const report = await ingestDailyBars(client, provider, symbols, from, to);
+  process.stdout.write(
+    `bars ${from} -> ${to} for ${symbols.length} symbol(s)\n` +
+      `  fetched   ${report.requested}\n` +
+      `  inserted  ${report.inserted}\n` +
+      `  revised   ${report.revised}\n` +
+      `  unchanged ${report.unchanged}\n` +
+      `  rejected  ${report.rejected.length}\n`,
+  );
+  // Bad ticks are surfaced, never swallowed — a silent reject is how a gap in
+  // history turns into a strategy that looks better than it is.
+  for (const { bar, problems } of report.rejected.slice(0, 20)) {
+    process.stdout.write(`    ${bar.symbol} ${bar.sessionDate}: ${problems.join(", ")}\n`);
+  }
+  if (report.rejected.length > 20) {
+    process.stdout.write(`    ... and ${report.rejected.length - 20} more\n`);
+  }
+}
+
+async function runActions(
+  client: pg.PoolClient,
+  provider: MarketDataProvider,
+  symbols: readonly string[],
+  from: string,
+  to: string,
+): Promise<void> {
+  const report = await ingestCorporateActions(client, provider, symbols, from, to);
+  process.stdout.write(
+    `corporate actions ${from} -> ${to}\n` +
+      `  fetched   ${report.requested}\n` +
+      `  inserted  ${report.inserted}\n` +
+      `  unchanged ${report.unchanged}\n` +
+      `  rejected  ${report.rejected.length}\n`,
+  );
+  // A rejected split is not a cosmetic loss: the price series keeps the
+  // discontinuity the split was supposed to explain. Print every one.
+  for (const { action, problems } of report.rejected) {
+    process.stdout.write(
+      `    ${action.symbol} ${action.kind} ex ${action.exDate}: ${problems.join(", ")}\n`,
+    );
+  }
+}
+
 async function main(): Promise<void> {
-  const command = process.argv[2];
-  if (command !== "bars") {
-    throw new Error(`Unknown command "${command ?? ""}". Expected: bars`);
+  const command = process.argv[2] as Command | undefined;
+  if (!command || !COMMANDS.includes(command)) {
+    throw new Error(
+      `Unknown command "${command ?? ""}". Expected one of: ${COMMANDS.join(", ")}`,
+    );
   }
 
-  const symbols = (arg("symbols") ?? "").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
-  if (symbols.length === 0) throw new Error("Pass --symbols NVDA,TSM");
-
+  const symbols = resolveSymbols();
   const from = arg("from") ?? "2015-01-01";
   const to = arg("to") ?? today();
 
@@ -47,27 +123,20 @@ async function main(): Promise<void> {
     keyId,
     secretKey,
     ...(process.env.ALPACA_DATA_BASE_URL ? { baseUrl: process.env.ALPACA_DATA_BASE_URL } : {}),
+    ...(process.env.ALPACA_FEED === "sip" ? { feed: "sip" as const } : {}),
   });
 
   const pool = new pg.Pool({ connectionString, max: 2 });
   const client = await pool.connect();
   try {
-    const report = await ingestDailyBars(client, provider, symbols, from, to);
-    process.stdout.write(
-      `bars ${from} -> ${to} for ${symbols.join(", ")}\n` +
-        `  fetched   ${report.requested}\n` +
-        `  inserted  ${report.inserted}\n` +
-        `  revised   ${report.revised}\n` +
-        `  unchanged ${report.unchanged}\n` +
-        `  rejected  ${report.rejected.length}\n`,
-    );
-    // Bad ticks are surfaced, never swallowed — a silent reject is how a gap in
-    // history turns into a strategy that looks better than it is.
-    for (const { bar, problems } of report.rejected.slice(0, 20)) {
-      process.stdout.write(`    ${bar.symbol} ${bar.sessionDate}: ${problems.join(", ")}\n`);
+    // Bars before actions, always: `ingestCorporateActions` attaches to
+    // securities that already exist and rejects symbols it has never seen, so
+    // the reverse order silently drops every action on a first run.
+    if (command === "bars" || command === "sync") {
+      await runBars(client, provider, symbols, from, to);
     }
-    if (report.rejected.length > 20) {
-      process.stdout.write(`    ... and ${report.rejected.length - 20} more\n`);
+    if (command === "actions" || command === "sync") {
+      await runActions(client, provider, symbols, from, to);
     }
   } finally {
     client.release();

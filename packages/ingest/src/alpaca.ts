@@ -17,6 +17,47 @@ import type {
 
 const PAGE_LIMIT = 10_000;
 
+/**
+ * The earliest vendor-supplied date that cannot possibly precede the
+ * declaration of a corporate action.
+ *
+ * Alpaca does not publish a declaration date, and `process_date` is its own
+ * bookkeeping stamp — in practice always *equal to the ex-date* on every split
+ * observed so far. Taking it at face value would tell the PIT layer that
+ * Apple's 4:1 split became knowable on the morning it took effect, a month
+ * after the market was actually told, and every backtest standing in that month
+ * would read a price series a real trader never saw.
+ *
+ * Every other date the vendor does give is bounded below by the declaration: a
+ * board declares first, and only then are record, payable and ex dates set off
+ * it. The minimum of them is therefore the tightest bound that is still
+ * defensible, and it errs in the safe direction — it can withhold an adjustment
+ * a backtest was entitled to, never grant one it was not.
+ *
+ * Taking a minimum also guarantees `announcedAt <= exDate`, so a vendor row
+ * whose `process_date` lands after the ex-date cannot trip the "announced after
+ * the ex-date" validator and drop out of the batch. A silently missing split
+ * leaves an unadjusted discontinuity in the series — a far worse failure than a
+ * late announcement, and a much quieter one.
+ */
+function earliestKnowableDate(
+  action: {
+    ex_date: string;
+    process_date?: string | undefined;
+    record_date?: string | undefined;
+    payable_date?: string | undefined;
+  },
+): string {
+  const candidates = [
+    action.ex_date,
+    action.process_date,
+    action.record_date,
+    action.payable_date,
+  ].filter((d): d is string => typeof d === "string" && /^\d{4}-\d{2}-\d{2}$/.test(d));
+  // ISO dates sort lexically, so the string minimum is the chronological one.
+  return candidates.reduce((earliest, d) => (d < earliest ? d : earliest), action.ex_date);
+}
+
 interface AlpacaBar {
   t: string; // RFC-3339 timestamp
   o: number;
@@ -30,6 +71,34 @@ interface AlpacaBar {
 
 interface AlpacaBarsResponse {
   bars?: Record<string, AlpacaBar[]>;
+  next_page_token?: string | null;
+}
+
+interface AlpacaSplit {
+  symbol: string;
+  ex_date: string;
+  process_date?: string;
+  record_date?: string;
+  payable_date?: string;
+  old_rate: number;
+  new_rate: number;
+}
+
+interface AlpacaDividend {
+  symbol: string;
+  ex_date: string;
+  process_date?: string;
+  record_date?: string;
+  payable_date?: string;
+  rate: number;
+}
+
+interface AlpacaCorporateActionsResponse {
+  corporate_actions?: {
+    forward_splits?: AlpacaSplit[];
+    reverse_splits?: AlpacaSplit[];
+    cash_dividends?: AlpacaDividend[];
+  };
   next_page_token?: string | null;
 }
 
@@ -132,61 +201,64 @@ export class AlpacaProvider implements MarketDataProvider {
   ): Promise<RawCorporateAction[]> {
     if (symbols.length === 0) return [];
 
-    const url = new URL("/v1/corporate-actions", this.#baseUrl);
-    url.searchParams.set("symbols", symbols.join(","));
-    url.searchParams.set("start", from);
-    url.searchParams.set("end", to);
-    url.searchParams.set("types", "forward_split,reverse_split,cash_dividend");
-
-    const response = await this.#fetch(url, {
-      headers: {
-        "APCA-API-KEY-ID": this.#keyId,
-        "APCA-API-SECRET-KEY": this.#secretKey,
-        accept: "application/json",
-      },
-    });
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => "");
-      throw new Error(
-        `Alpaca corporate actions request failed: ${response.status}. ${body.slice(0, 300)}`,
-      );
-    }
-
-    const payload = (await response.json()) as {
-      corporate_actions?: {
-        forward_splits?: Array<{ symbol: string; ex_date: string; process_date?: string; old_rate: number; new_rate: number }>;
-        reverse_splits?: Array<{ symbol: string; ex_date: string; process_date?: string; old_rate: number; new_rate: number }>;
-        cash_dividends?: Array<{ symbol: string; ex_date: string; process_date?: string; rate: number }>;
-      };
-    };
-
     const actions: RawCorporateAction[] = [];
-    const ca = payload.corporate_actions ?? {};
+    let pageToken: string | null | undefined;
 
-    for (const split of [...(ca.forward_splits ?? []), ...(ca.reverse_splits ?? [])]) {
-      actions.push({
-        symbol: split.symbol,
-        kind: "split",
-        exDate: split.ex_date,
-        // Alpaca does not publish an announcement date. Falling back to
-        // process_date, then ex_date, is CONSERVATIVE in the wrong direction —
-        // it can make an adjustment appear knowable slightly later than it was,
-        // which costs accuracy but never manufactures look-ahead.
-        announcedAt: split.process_date ?? split.ex_date,
-        splitRatio: split.new_rate / split.old_rate,
-      });
-    }
+    // Paginated for the same reason bars are, only with sharper consequences: a
+    // truncated bar page leaves a visible hole in a series, while a truncated
+    // action page leaves a split missing from an otherwise complete one. The
+    // series then reads as a genuine 75% overnight collapse, and every feature
+    // and label computed from it inherits the lie.
+    do {
+      const url = new URL("/v1/corporate-actions", this.#baseUrl);
+      url.searchParams.set("symbols", symbols.join(","));
+      url.searchParams.set("start", from);
+      url.searchParams.set("end", to);
+      url.searchParams.set("types", "forward_split,reverse_split,cash_dividend");
+      url.searchParams.set("limit", "1000");
+      if (pageToken) url.searchParams.set("page_token", pageToken);
 
-    for (const dividend of ca.cash_dividends ?? []) {
-      actions.push({
-        symbol: dividend.symbol,
-        kind: "cash_dividend",
-        exDate: dividend.ex_date,
-        announcedAt: dividend.process_date ?? dividend.ex_date,
-        cashAmount: dividend.rate,
+      const response = await this.#fetch(url, {
+        headers: {
+          "APCA-API-KEY-ID": this.#keyId,
+          "APCA-API-SECRET-KEY": this.#secretKey,
+          accept: "application/json",
+        },
       });
-    }
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(
+          `Alpaca corporate actions request failed: ${response.status}. ${body.slice(0, 300)}`,
+        );
+      }
+
+      const payload = (await response.json()) as AlpacaCorporateActionsResponse;
+      const ca = payload.corporate_actions ?? {};
+
+      for (const split of [...(ca.forward_splits ?? []), ...(ca.reverse_splits ?? [])]) {
+        actions.push({
+          symbol: split.symbol,
+          kind: "split",
+          exDate: split.ex_date,
+          // See earliestKnowableDate: late rather than early, always.
+          announcedAt: earliestKnowableDate(split),
+          splitRatio: split.new_rate / split.old_rate,
+        });
+      }
+
+      for (const dividend of ca.cash_dividends ?? []) {
+        actions.push({
+          symbol: dividend.symbol,
+          kind: "cash_dividend",
+          exDate: dividend.ex_date,
+          announcedAt: earliestKnowableDate(dividend),
+          cashAmount: dividend.rate,
+        });
+      }
+
+      pageToken = payload.next_page_token;
+    } while (pageToken);
 
     return actions;
   }
