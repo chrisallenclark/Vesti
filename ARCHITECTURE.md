@@ -83,7 +83,21 @@ backtest was entitled to, never grant one it was not.
 
 **Survivorship** is handled the same way: delisted securities stay in the master
 with `delisted_at` set, and `pit_universe(date)` returns everything listed on
-that date.
+that date. EDGAR's ticker file lists only currently-listed companies, so the CIK
+is recorded on `security_identifiers` at first sight — once a name drops out of
+that file its ticker can never be resolved again, and a survivorship-safe
+fundamental history depends on having written the mapping down while it was
+still there.
+
+**Fundamentals are the sharpest case of all this.** A price is knowable the
+instant it prints; a financial fact describes a period that ended weeks before
+anyone outside the company saw it. `fundamental_facts` therefore separates
+`period_end` (when it became true) from `filed_at` (when it became knowable),
+and keeps every restatement rather than overwriting — a company revising 2022 in
+2023 must not change what a backtest standing in early 2023 can see.
+`pit_fundamental_facts()` returns the newest version filed by the as-of instant,
+which is the only reading that is correct at every point in the past as well as
+now.
 
 ### 2. Only the execution service can trade
 
@@ -170,7 +184,10 @@ packages/core/       Domain logic, all pure and all tested:
                        broker/   BrokerAdapter, execution gate, SimBroker
                        market/   US equity trading calendar
                        sim/      seeded PRNG, synthetic series with ground truth
-packages/ingest/     Market data providers and the bitemporal write path.
+packages/ingest/     Market data providers and the bitemporal write path:
+                       alpaca.ts       daily bars + corporate actions
+                       edgar.ts        SEC XBRL company facts, concept aliasing
+                       fundamentals.ts bitemporal fact writes, restatement-aware
 packages/execution/  The order lifecycle against the database and the venue:
                        ledger.ts     intent -> ruling -> submission -> fill
                        lots.ts       specific-lot selection, mandate-scoped
@@ -284,6 +301,8 @@ Groups, in dependency order. Full DDL in `packages/db/migrations/`.
 | `007_synthetic_source` | `sources` row for generated data, tiered lowest |
 | `008_partition_provisioning` | Partition functions as `SECURITY DEFINER` |
 | `009_fill_idempotency` | Deduplication key for replayed broker fills |
+| `010_equity_and_reconciliation` | `equity_snapshots`, `reconciliation_runs` |
+| `011_fundamentals` | Bitemporal `fundamental_facts` + `pit_fundamental_facts()` |
 
 **Partitioning.** `bars_daily` by year; `bars_intraday` and `bar_features` by
 month (1-minute data is the volume driver). `DEFAULT` partitions catch

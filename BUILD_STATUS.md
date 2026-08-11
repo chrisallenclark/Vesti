@@ -39,7 +39,7 @@ cannot be filled in later.
 $305.27 and sold at $305.02 on the Alpaca paper account, via intent → risk
 ruling → execution gate → venue → fill → lot → cash → reconciliation. Realised
 −$0.25; Alpaca's cash moved by exactly −$0.25 and so did the mandate's ledger.
-**237 tests pass** across five packages.
+**273 tests pass** across five packages.
 
 No strategy exists yet, so nothing decides *what* to trade. That is Phase 4 —
 see *Honest limitations* below.
@@ -73,7 +73,7 @@ research later; it is not a prerequisite for measuring whether the approach work
 |---|---|---|
 | **0** Foundations | Schema, bitemporal PIT layer, roles + RLS, immutability, job runner, AI cost ledger, docs | ✅ **complete** |
 | **1** Portfolio spine + design system | Auth, mandates, accounts, lot-level positions, manual entry, risk settings, journal, mobile shell, component library | 🔨 **in progress** |
-| **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done** — daily bars and corporate actions ingested from Alpaca and verified against the PIT layer; fundamentals and catalysts remain |
+| **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done; fundamentals built but not yet ingested** — the EDGAR layer is complete and tested offline, blocked from running by this environment's egress policy (see below). Catalysts remain |
 | **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
 | **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
 | **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ✅ **complete** — engine, simulator, gate, Alpaca paper adapter, DB order lifecycle, kill switch and reconciliation, all tested and exercised on a real round trip. Post-trade review moves to Phase 6, where there are trades to review |
@@ -119,6 +119,7 @@ mistaken for evidence.
 | `008_partition_provisioning.sql` | Partition functions as `SECURITY DEFINER`, so ingest can provision without holding `CREATE` on the schema |
 | `009_fill_idempotency.sql` | Partial unique index on `fills (order_id, broker_fill_id)` — the deduplication key for replayed broker fills |
 | `010_equity_and_reconciliation.sql` | `equity_snapshots` (the daily per-mandate mark) and `reconciliation_runs` |
+| `011_fundamentals.sql` | Bitemporal `fundamental_facts` + `pit_fundamental_facts()` — XBRL with restatement history |
 
 ### Verified behaviour
 
@@ -177,6 +178,44 @@ Three defects surfaced that synthetic data could not have shown:
    the series reads as a real 75% overnight collapse.
 3. **The CLI could not write `corporate_actions` at all** — bars only, which is
    the half that produces those cliffs.
+
+## EDGAR fundamentals
+
+Built, tested offline, **not yet ingested**: `www.sec.gov` and `data.sec.gov`
+are both denied by this environment's egress policy (403 on CONNECT). That is
+the one thing standing between this and a working Long-Term mandate — see
+*What is needed from outside* below.
+
+**Fundamentals are where point-in-time discipline actually bites.** A price is
+knowable the instant it prints, so a sloppy price pipeline misaligns a bar. A
+financial fact describes a period that ended weeks before anyone outside the
+company saw it: Q4 revenue is true on 31 December and public in February. A
+screen that reads December's revenue in December knows the future, and it will
+produce a strategy that looks superb and cannot be traded. So `period_end`
+(when it became true) and `filed_at` (when it became knowable) are separate
+columns, and `pit_fundamental_facts()` filters on the second.
+
+**Restatements make it genuinely bitemporal.** Companies revise prior periods
+under a new accession months or years later. Overwriting the old value would
+make history change retroactively — a backtest run today would see numbers
+nobody had, and the same backtest run last year would have seen different ones.
+Every version is kept, and the PIT function returns the newest one filed by the
+as-of instant. A screen standing in early 2023 sees 2023's understanding of
+2022; standing today it sees the correction. Both are right.
+
+**Two guards against the most flattering bug available here.** A fact filed
+before the period it reports had ended is look-ahead with a timestamp on it, and
+it is rejected by the validator *and* by a `CHECK` constraint — the second is
+why a bug in the first cannot quietly admit one. And `observed_at` is the end of
+the filing day rather than its start, because filings are accepted through the
+afternoon and midnight would claim the market knew a 10-K before it opened.
+
+**Raw tags only.** Filers use different us-gaap concepts for the same quantity
+— `Revenues`, `RevenueFromContractWithCustomerExcludingAssessedTax`,
+`SalesRevenueNet` — and the mapping lives in code, resolved at read time.
+Canonicalising at write time would bake one interpretation into permanent
+storage, the same mistake as an adjusted close, and revising it would mean
+re-ingesting a decade of filings.
 
 ## The order lifecycle
 
@@ -276,6 +315,19 @@ rather than repairs — a drift means a fill we missed, one applied twice, or an
 unprocessed corporate action, and writing one number over the other destroys the
 evidence needed to tell them apart.
 
+## What is needed from outside
+
+Things no amount of code here can supply.
+
+1. **Allowlist `www.sec.gov` and `data.sec.gov`.** Both are refused by this
+   session's egress policy, so the EDGAR layer has never made a real request.
+   Everything below the network call is built and tested; ingestion is one
+   command once the hosts are reachable.
+2. **A persistent Postgres.** This container is ephemeral and takes the
+   database with it. Code is pushed; data is not.
+3. **A host and a scheduler** for the daily session. A fresh process per run is
+   also the recovery path for the proxy DNS latch described below.
+
 ## Honest limitations
 
 Worth stating plainly, because the gap between "foundations complete" and
@@ -301,51 +353,58 @@ Worth stating plainly, because the gap between "foundations complete" and
    residual — and that changes what a fill means, since an internal cross has no
    broker fill to reconcile against. Deferred to the Phase 6 execution loop
    deliberately rather than by omission.
-4. **Only the Active mandate has a strategy at all.** Long-Term needs EDGAR
-   fundamentals and Catalyst needs the event calendar — both Phase 2 — so two
-   of the three mandates cannot produce a signal yet whatever the loop does.
-5. **Position sizing values holdings at the last daily close**, not a live
+4. **Only the Active mandate has a strategy at all.** The Long-Term screen now
+   has a data layer waiting for it, but no facts in it and no screen written
+   against it; Catalyst still needs the event calendar. Two of the three
+   mandates cannot produce a signal whatever the loop does.
+5. **The EDGAR layer has never spoken to EDGAR.** Its parsing is written against
+   the documented `companyfacts` shape and exercised against a fixture in that
+   shape — which proves the code is self-consistent, not that the shape is
+   right. The same class of gap the synthetic price tests had before real bars
+   arrived, and it closes the same way: three real filers ingested, and the
+   restatement and filing-date assertions re-run against them.
+6. **Position sizing values holdings at the last daily close**, not a live
    quote. Fine for a runner invoked by hand between sessions; wrong for an
    intraday loop, where a stale mark means the risk engine sizes against
    yesterday's equity.
-6. **History starts 2020-07-27, not 2015.** Measured, not requested: that is
+7. **History starts 2020-07-27, not 2015.** Measured, not requested: that is
    where Alpaca's IEX archive begins, and the SIP feed returns "subscription
    does not permit" on the free tier. ~6 years is enough for the splits the PIT
    layer is verified against and thin for anything wanting a pre-COVID regime in
    its sample. Any claim about behaviour across regimes is currently a claim
    about 2020 onward.
-7. **Split announcements are late by construction.** Alpaca publishes no
+8. **Split announcements are late by construction.** Alpaca publishes no
    declaration date. The ingest derives the tightest bound the vendor's own
    dates support — the record date, typically 1–4 weeks before the ex-date — but
    Apple's split was really declared 2020-07-30 and we date it 2020-08-24. The
    error is always in the safe direction: it can withhold an adjustment a
    backtest was entitled to, never grant one it was not. A vendor with
    declaration dates would tighten it.
-8. **One known bad bar.** SPY carries a single 2018-11-01 print — 200 shares,
+9. **One known bad bar.** SPY carries a single 2018-11-01 print — 200 shares,
    one trade, zero range — 20 months before the rest of its history. It is
    individually plausible, so the per-bar validator passes it, and only its
    isolation gives it away. It matters because a return computed from row
    adjacency would read a 20-month gap as one session. Phase 3 features must key
    off the trading calendar rather than adjacent rows; recorded here rather than
    discovered as an outlier in a backtest.
-9. **Reconciliation is not scheduled.** The function exists and is tested;
+10. **Reconciliation is not scheduled.** The function exists and is tested;
    nothing calls it on a timer yet. An unreconciled ledger is only as good as
    the last time someone looked.
-10. **The simulator's fill model is a model.** Realistic and deliberately
+11. **The simulator's fill model is a model.** Realistic and deliberately
    pessimistic, but a model: it assumes a single intrabar path from a daily bar,
    no queue position, and no venue-specific behaviour. Its purpose is to stop a
    strategy looking better than it is, not to predict any individual fill.
-11. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
+12. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
    RVOL, and volume-confirmation signals are biased. Price, structure, and
    volatility setups validate fine; anything whose edge depends on volume needs
    a full-tape upgrade (Polygon, ~$79–199/mo) before its backtest means
    anything. Every bar and feature row records its `tape` so that upgrade
    recomputes cleanly.
-12. **RLS policies are permissive when unset.** `vesti_current_user_id()`
+13. **RLS policies are permissive when unset.** `vesti_current_user_id()`
    returning NULL means unrestricted — correct for migrations and the
    single-user deployment, but the connection pool must set
    `vesti.current_user_id` per request before multi-user ships.
-13. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
+14. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
    rows until one is inserted; the router must treat "no budget configured" as
    deny, not allow.
 
@@ -361,7 +420,7 @@ npm install
 npm run db:migrate        # apply migrations
 npm run db:status         # what is applied vs pending
 npm run db:test           # 25 invariant assertions on a fresh database
-npm test                  # everything: 237 assertions across five packages
+npm test                  # everything: 273 assertions across five packages
 ```
 
 Loading real data needs Alpaca keys in `.env`:

@@ -17,11 +17,13 @@ import pg from "pg";
 import { AlpacaProvider } from "./alpaca.ts";
 import { ingestDailyBars } from "./bars.ts";
 import { ingestCorporateActions } from "./actions.ts";
+import { EdgarClient, INGESTED_CONCEPTS, extractFacts } from "./edgar.ts";
+import { ingestFundamentals, knownCiks, recordCik } from "./fundamentals.ts";
 import { resolveUniverse } from "./universe.ts";
 import type { MarketDataProvider } from "./provider.ts";
 
-type Command = "bars" | "actions" | "sync";
-const COMMANDS: readonly Command[] = ["bars", "actions", "sync"];
+type Command = "bars" | "actions" | "sync" | "fundamentals";
+const COMMANDS: readonly Command[] = ["bars", "actions", "sync", "fundamentals"];
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -96,6 +98,93 @@ async function runActions(
   }
 }
 
+/**
+ * XBRL fundamentals for a set of symbols.
+ *
+ * Resolves each symbol to a CIK once and records it, because EDGAR's ticker
+ * file only lists currently-listed companies — a name that delists later can
+ * never be resolved from its ticker again, and a survivorship-safe history
+ * depends on having written the mapping down while it was still there.
+ */
+async function runFundamentals(
+  client: pg.PoolClient,
+  symbols: readonly string[],
+  since: string,
+): Promise<void> {
+  const userAgent = process.env.SEC_EDGAR_USER_AGENT;
+  if (!userAgent) {
+    throw new Error(
+      'SEC_EDGAR_USER_AGENT is unset. The SEC requires a real contact address, e.g. ' +
+        '"Vesti Research you@example.com". See .env.example.',
+    );
+  }
+
+  const edgar = new EdgarClient({ userAgent });
+  const alreadyKnown = await knownCiks(client, symbols);
+  const missing = symbols.filter((s) => !alreadyKnown.has(s));
+
+  // The ticker file is ~1MB and covers every listed company, so it is fetched
+  // once and only when something still needs resolving.
+  let tickerMap: Map<string, string> | null = null;
+  if (missing.length > 0) tickerMap = await edgar.fetchTickerMap();
+
+  const totals = { requested: 0, inserted: 0, unchanged: 0, restatements: 0, rejected: 0 };
+
+  for (const symbol of symbols) {
+    const known = alreadyKnown.get(symbol);
+    let cik = known?.cik;
+
+    if (!cik) {
+      cik = tickerMap?.get(symbol);
+      if (!cik) {
+        process.stdout.write(`  ${symbol}: no CIK in EDGAR's ticker file — skipped\n`);
+        continue;
+      }
+      const { rows } = await client.query<{ id: string }>(
+        `SELECT id FROM securities WHERE symbol = $1 AND delisted_at IS NULL`,
+        [symbol],
+      );
+      const securityId = rows[0]?.id;
+      if (!securityId) {
+        process.stdout.write(`  ${symbol}: not in securities — ingest bars first\n`);
+        continue;
+      }
+      await recordCik(client, { securityId, cik });
+    }
+
+    const document = await edgar.fetchCompanyFacts(cik);
+    const facts = extractFacts(document, symbol, { concepts: INGESTED_CONCEPTS, since });
+    const report = await ingestFundamentals(client, "sec_edgar", facts);
+
+    totals.requested += report.requested;
+    totals.inserted += report.inserted;
+    totals.unchanged += report.unchanged;
+    totals.restatements += report.restatements;
+    totals.rejected += report.rejected.length;
+
+    process.stdout.write(
+      `  ${symbol} (CIK ${cik}): ${report.inserted} new, ${report.restatements} restated, ` +
+        `${report.unchanged} unchanged, ${report.rejected.length} rejected\n`,
+    );
+    // A rejected fact is not cosmetic: 'filed before the period it reports had
+    // ended' is look-ahead with a timestamp on it, and it must be visible.
+    for (const { fact, problems } of report.rejected.slice(0, 5)) {
+      process.stdout.write(
+        `      ${fact.concept} ${fact.periodEnd}: ${problems.join(", ")}\n`,
+      );
+    }
+  }
+
+  process.stdout.write(
+    `fundamentals since ${since}\n` +
+      `  fetched      ${totals.requested}\n` +
+      `  inserted     ${totals.inserted}\n` +
+      `  restatements ${totals.restatements}\n` +
+      `  unchanged    ${totals.unchanged}\n` +
+      `  rejected     ${totals.rejected}\n`,
+  );
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2] as Command | undefined;
   if (!command || !COMMANDS.includes(command)) {
@@ -108,9 +197,11 @@ async function main(): Promise<void> {
   const from = arg("from") ?? "2015-01-01";
   const to = arg("to") ?? today();
 
+  // EDGAR needs no Alpaca key, so the check is scoped to the commands that do.
+  const needsAlpaca = command !== "fundamentals";
   const keyId = process.env.ALPACA_API_KEY_ID;
   const secretKey = process.env.ALPACA_API_SECRET_KEY;
-  if (!keyId || !secretKey) {
+  if (needsAlpaca && (!keyId || !secretKey)) {
     throw new Error(
       "ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY are unset. Free keys: https://alpaca.markets",
     );
@@ -120,8 +211,8 @@ async function main(): Promise<void> {
   if (!connectionString) throw new Error("DATABASE_URL_RESEARCH is unset. See .env.example.");
 
   const provider = new AlpacaProvider({
-    keyId,
-    secretKey,
+    keyId: keyId ?? "",
+    secretKey: secretKey ?? "",
     ...(process.env.ALPACA_DATA_BASE_URL ? { baseUrl: process.env.ALPACA_DATA_BASE_URL } : {}),
     ...(process.env.ALPACA_FEED === "sip" ? { feed: "sip" as const } : {}),
   });
@@ -137,6 +228,9 @@ async function main(): Promise<void> {
     }
     if (command === "actions" || command === "sync") {
       await runActions(client, provider, symbols, from, to);
+    }
+    if (command === "fundamentals") {
+      await runFundamentals(client, symbols, from);
     }
   } finally {
     client.release();
