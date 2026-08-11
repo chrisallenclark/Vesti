@@ -1,0 +1,67 @@
+# Runs the schema and the invariants against the Postgres major version the
+# hosted database actually runs, rather than whatever the last laptop had.
+#
+# The point is not coverage for its own sake. Every failure this project has hit
+# in setup was environmental — a pooled endpoint that cannot hold session state,
+# a stale exported variable beating a config file, a Postgres version nobody had
+# tried — and none of it was reproducible where the code was written. This job
+# is the reproduction: same major version, empty database, no local state.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        # Matches the hosted database. A migration that works on 16 and fails on
+        # 18 should fail here, not during someone's setup.
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_DB: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      VESTI_APP_PASSWORD: ci_app_password
+      VESTI_RESEARCH_PASSWORD: ci_research_password
+      VESTI_EXECUTION_PASSWORD: ci_execution_password
+      VESTI_BACKTEST_PASSWORD: ci_backtest_password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Migrate a fresh database
+        run: npm run db:migrate
+
+      - name: Migrate again — proves the runner is idempotent
+        run: npm run db:migrate
+
+      # No Alpaca credentials here, so the suites that need the live vendor skip
+      # themselves. Everything deterministic still runs, which is the part a
+      # schema change can break.
+      - name: Test
+        run: npm test

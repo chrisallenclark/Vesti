@@ -1,0 +1,85 @@
+# Migrates and loads the hosted database from GitHub's runners.
+#
+# This exists so setting the system up does not depend on a working laptop, a
+# working terminal, or a shell whose exported variables agree with its config
+# file. The runner is empty every time: nothing is inherited, nothing is stale,
+# and the logs are readable afterwards by whoever needs to debug it.
+#
+# It needs three repository secrets. Settings → Secrets and variables → Actions
+# → New repository secret:
+#
+#   DATABASE_URL            the connection string from the database dashboard
+#   ALPACA_API_KEY_ID       starts with PK
+#   ALPACA_API_SECRET_KEY   the longer value shown once when the key is created
+#
+# Secrets are encrypted, are not readable after saving, and are masked in logs.
+# They are the correct home for these values — unlike .env.example, which is
+# committed.
+name: Set up and ingest
+
+on:
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Earliest session to load (the consolidated tape starts 2016-01-04)"
+        required: false
+        default: "2016-01-01"
+      skip_market_data:
+        description: "Migrate and load fundamentals only — no Alpaca keys needed"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # Two runs writing the same database would interleave their migrations.
+  group: ingest-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || format('Vesti Research {0}@users.noreply.github.com', github.repository_owner) }}
+
+    steps:
+      - name: Check the database secret is present
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is not set. Add it under Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+          echo "DATABASE_URL is set (${#DATABASE_URL} characters)."
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - run: npm ci
+
+      # setup derives the role URLs, generates role passwords, switches off a
+      # pooled endpoint, proves the connection and migrates. --no-ingest here so
+      # that a market-data failure cannot be confused with a schema failure.
+      - name: Configure and migrate
+        run: npm run setup -- --no-ingest < /dev/null
+
+      - name: Ingest prices and corporate actions
+        if: ${{ inputs.skip_market_data != true }}
+        run: npm run ingest -w @vesti/ingest -- sync --universe starter --from ${{ inputs.from }}
+
+      - name: Ingest EDGAR fundamentals
+        # Fundamentals attach to securities that bars create, so this is only
+        # meaningful once prices exist.
+        if: ${{ inputs.skip_market_data != true }}
+        run: npm run ingest -w @vesti/ingest -- fundamentals --universe starter
+
+      - name: Summarise what landed
+        if: always()
+        run: npm run db:summary
