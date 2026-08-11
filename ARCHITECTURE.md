@@ -66,10 +66,20 @@ backtest silently returning zero bars. A genuine *revision* is the exception and
 does record publication time, because a corrected figure really was not available
 until it was published.
 
-This is verified end to end rather than asserted: a generated series with known
-ground truth is written through the real ingestion path and read back through the
-real PIT functions, and the reconstructed continuous price must match the truth
-to within the cent the vendor rounds to.
+This is verified end to end rather than asserted, and twice over. A generated
+series with known ground truth is written through the real ingestion path and
+read back through the real PIT functions, and the reconstructed continuous price
+must match the truth to within the cent the vendor rounds to. That test can only
+fail if the code is wrong about our own fiction, so a second one ingests real
+bars and real corporate actions and compares the reconstruction to **the
+vendor's own split-adjusted series**, fetched by a separate implementation. Six
+thousand sessions, nine real splits, two of them on one name so the factors have
+to compound.
+
+**Alpaca publishes no declaration date**, so announcement is taken as the
+earliest date it does publish that cannot precede one — record, payable, process,
+ex. That is late rather than early, always: it can withhold an adjustment a
+backtest was entitled to, never grant one it was not.
 
 **Survivorship** is handled the same way: delisted securities stay in the master
 with `delisted_at` set, and `pit_universe(date)` returns everything listed on
@@ -123,6 +133,17 @@ specific lots they close via `order_lot_allocations`, and the
 belongs to a different mandate than the order. A tactical stop physically cannot
 sell long-term shares.
 
+Enforced twice, deliberately. `packages/execution/src/lots.ts` scopes every lot
+query to the *order's* mandate, so an exit never sees another mandate's shares —
+that is why the rule holds in practice. The trigger is why a bug there cannot
+quietly break it, and a test writes an allocation directly, past every line of
+application code, to confirm the database still refuses.
+
+The concrete case: one ticker, 500 shares held long-term and 40 held tactically.
+An Active exit for 100 fails, though the account holds 540 and the broker would
+sell them. Code that asks "does the account hold 100?" closes a multi-year
+position to satisfy a two-day trade and books the gain to the wrong thesis.
+
 ### 5. History is append-only
 
 `audit_log`, `risk_evaluations`, `pre_trade_records`, `decision_snapshots`,
@@ -150,6 +171,10 @@ packages/core/       Domain logic, all pure and all tested:
                        market/   US equity trading calendar
                        sim/      seeded PRNG, synthetic series with ground truth
 packages/ingest/     Market data providers and the bitemporal write path.
+packages/execution/  The order lifecycle against the database:
+                       ledger.ts     intent -> ruling -> submission -> fill
+                       lots.ts       specific-lot selection, mandate-scoped
+                       reconcile.ts  our lots vs the broker's omnibus count
 services/quant/      Python: features, patterns, backtest, Monte Carlo.
 docs/                Long-form design notes.
 ```
@@ -180,6 +205,19 @@ implementations over the project's life: `SimBroker`, Alpaca paper, Alpaca live.
 A broker deliberately does not know about mandates — a real one holds a single
 omnibus position per symbol with one average cost, which is exactly why our
 specific-lot ledger exists alongside it and gets reconciled against it.
+
+**Order ledger** (`packages/execution/`). Every fill's whole effect in one
+transaction: a lot opened or consumed, cash moved, the order advanced. Three
+properties it is built around — fills are idempotent, because brokers replay and
+reapplying one manufactures a position that never existed; exits consume only
+their own mandate's lots; and cash is a ledger of signed entries rather than a
+balance, so it can be explained rather than merely reported.
+
+Reconciliation compares our per-mandate lots and cash to the broker's own count.
+Both sides come from different code over different state, which is what makes
+agreement evidence instead of a tautology. It reports rather than repairs: a
+drift means a fill we missed, one applied twice, or an unprocessed corporate
+action, and overwriting either number destroys what distinguishes them.
 
 **The simulator fills pessimistically, on purpose.** No same-bar signal and
 fill: an order submitted on session T is not eligible until T+1. Resting limits
@@ -226,6 +264,9 @@ Groups, in dependency order. Full DDL in `packages/db/migrations/`.
 | `004_portfolio_risk_strategy` | `mandates`, `accounts`, `lots`, `orders`, `fills`, `cash_ledger`, risk tables, strategy/setup versioning, decision records |
 | `005_roles_rls_immutability` | Four roles, grants, RLS policies, append-only triggers, the risk gate |
 | `006_jobs_and_ai_ledger` | `jobs` queue, `ai_calls`, `ai_model_pricing`, `ai_budgets` |
+| `007_synthetic_source` | `sources` row for generated data, tiered lowest |
+| `008_partition_provisioning` | Partition functions as `SECURITY DEFINER` |
+| `009_fill_idempotency` | Deduplication key for replayed broker fills |
 
 **Partitioning.** `bars_daily` by year; `bars_intraday` and `bar_features` by
 month (1-minute data is the volume driver). `DEFAULT` partitions catch
