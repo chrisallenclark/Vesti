@@ -1,0 +1,310 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design tokens — the single source of truth for colour, type, and motion.
+   No component may hard-code a hex value.
+
+   Dark-first by intent. Light is a warm-paper inversion, applied by media query
+   (guarded so an explicit dark choice still wins) and again by the data-theme
+   stamp so a toggle wins in both directions.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root {
+  --surface-0: #09090b;
+  --surface-1: #101013;
+  --surface-2: #17171b;
+  --hairline: rgba(255, 255, 255, 0.07);
+  --hairline-strong: rgba(255, 255, 255, 0.13);
+
+  --text-1: #f4f4f5;
+  --text-2: #a1a1aa;
+  --text-3: #52525b;
+
+  --accent: #c8b08a;
+  --accent-dim: rgba(200, 176, 138, 0.16);
+
+  --positive: #4e9a7c;
+  --negative: #b4645c;
+  --warning: #c9a227;
+  --critical: #a33e38;
+
+  --track: rgba(255, 255, 255, 0.06);
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur: 240ms;
+
+  --gutter: 20px;
+  --radius: 16px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --surface-0: #edebe5;
+    --surface-1: #f9f8f5;
+    --surface-2: #e2dfd8;
+    --hairline: rgba(24, 24, 27, 0.1);
+    --hairline-strong: rgba(24, 24, 27, 0.18);
+
+    --text-1: #18181b;
+    --text-2: #57575f;
+    --text-3: #91919a;
+
+    --accent: #8a6d3f;
+    --accent-dim: rgba(138, 109, 63, 0.14);
+
+    --positive: #2f6b52;
+    --negative: #8f473f;
+    --warning: #866a12;
+    --critical: #8c2f2a;
+
+    --track: rgba(24, 24, 27, 0.09);
+  }
+}
+
+:root[data-theme="light"] {
+  --surface-0: #edebe5;
+  --surface-1: #f9f8f5;
+  --surface-2: #e2dfd8;
+  --hairline: rgba(24, 24, 27, 0.1);
+  --hairline-strong: rgba(24, 24, 27, 0.18);
+
+  --text-1: #18181b;
+  --text-2: #57575f;
+  --text-3: #91919a;
+
+  --accent: #8a6d3f;
+  --accent-dim: rgba(138, 109, 63, 0.14);
+
+  --positive: #2f6b52;
+  --negative: #8f473f;
+  --warning: #866a12;
+  --critical: #8c2f2a;
+
+  --track: rgba(24, 24, 27, 0.09);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark light;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-1);
+  font-family: -apple-system, "SF Pro Text", "SF Pro Display", system-ui, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  /* Digits must not jitter as live values update. */
+  font-variant-numeric: tabular-nums;
+}
+
+.shell {
+  max-width: 430px;
+  margin: 0 auto;
+  padding: 0 var(--gutter) 100px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Type roles ─────────────────────────────────────────────────────────── */
+.label {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.heroNum {
+  /* Scales with viewport so a seven-figure balance still fits beside the rings
+     on a small phone, without shrinking a modest one into insignificance. */
+  font-size: clamp(26px, 7.6vw, 36px);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+  line-height: 1;
+}
+.statNum {
+  font-size: 20px;
+  font-weight: 500;
+  letter-spacing: -0.015em;
+}
+.caption {
+  font-size: 13px;
+  color: var(--text-2);
+}
+.pos { color: var(--positive); }
+.neg { color: var(--negative); }
+
+/* ── Chrome ─────────────────────────────────────────────────────────────── */
+.appHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 28px 0 16px;
+}
+.wordmark {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.wordmark span { color: var(--accent); }
+
+.card {
+  background: var(--surface-1);
+  border-radius: var(--radius);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.cardHead {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sectionRule {
+  margin: 20px 0 4px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sectionRule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+
+/* ── Hero ───────────────────────────────────────────────────────────────── */
+.hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+/* min-width:0 lets the number shrink instead of shoving the rings out of the
+   card; the rings themselves must never shrink, or they collapse to a dot. */
+.heroLeft { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.hero > svg { flex: none; }
+.delta { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; font-weight: 500; }
+.delta .glyph { font-size: 11px; }
+
+.ringLegend {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 14px;
+}
+.legendRow {
+  display: grid;
+  grid-template-columns: 8px 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+}
+.swatch { width: 8px; height: 8px; border-radius: 2px; }
+.legendRow .amt { color: var(--text-2); font-size: 13px; }
+.legendRow .pct { font-weight: 500; min-width: 44px; text-align: right; }
+
+/* ── Position rows ──────────────────────────────────────────────────────── */
+.rows { display: flex; flex-direction: column; }
+.row {
+  display: grid;
+  grid-template-columns: 1fr 64px 76px;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--hairline);
+  text-decoration: none;
+  color: inherit;
+}
+.row:last-child { border-bottom: 0; }
+.rowId { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ticker { font-size: 15px; font-weight: 500; letter-spacing: -0.01em; }
+.mandateTag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.rowVal { text-align: right; display: flex; flex-direction: column; gap: 4px; }
+.rowVal .v { font-size: 14px; font-weight: 500; }
+.rowVal .d { font-size: 12px; }
+
+/* ── Ladder captions ────────────────────────────────────────────────────── */
+.ladderLegend { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-2); }
+.ladderLegend b { display: block; color: var(--text-1); font-weight: 500; font-size: 14px; }
+.ladderLegend > div:nth-child(2) { text-align: center; }
+.ladderLegend > div:last-child { text-align: right; }
+
+/* ── Empty state ────────────────────────────────────────────────────────── */
+.empty { align-items: center; text-align: center; padding: 32px 20px; gap: 14px; }
+.empty p { margin: 0; color: var(--text-2); font-size: 14px; }
+
+/* ── Tab bar ────────────────────────────────────────────────────────────── */
+.tabbar {
+  position: fixed;
+  inset: auto 0 0 0;
+  background: color-mix(in srgb, var(--surface-1) 86%, transparent);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  border-top: 1px solid var(--hairline);
+  padding-bottom: env(safe-area-inset-bottom);
+  z-index: 10;
+}
+.tabbarInner {
+  max-width: 430px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+}
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 10px 0 12px;
+  min-height: 44px;
+  color: var(--text-3);
+  text-decoration: none;
+  transition: color var(--dur) var(--ease);
+}
+.tab[aria-current="page"] { color: var(--accent); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.tab .t { font-size: 10px; letter-spacing: 0.05em; }
+
+.footnote {
+  color: var(--text-3);
+  font-size: 12px;
+  text-align: center;
+  padding: 8px 0 0;
+  line-height: 1.6;
+}
+
+/* Screen-reader text for the data behind every visual. */
+.vh {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

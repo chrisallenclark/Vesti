@@ -18,22 +18,58 @@ see *Honest limitations* below.
 
 ## Phases
 
+**The target: Phase 6.** All three mandates paper trading autonomously against
+live market data, with equity curves and benchmark comparison per mandate — so
+the question "does this actually make money?" has a measured answer.
+
+Reaching that required a **correction to the phase order**. The original
+sequence built the technical engine (Active mandate only) before paper trading,
+and left fundamentals and catalysts until Phase 7 — which would have delivered
+one portfolio trading and two sitting idle.
+
+The correction is cheap because **no mandate needs the AI layer to trade**:
+
+- **Active** — technical setups from price and volume.
+- **Long-Term** — deterministic quality and valuation screens (ROIC, FCF growth,
+  balance sheet, valuation percentile) straight from EDGAR XBRL.
+- **Catalyst** — deterministic event rules (known catalyst inside a window,
+  prior-evidence strength, binary-event position sizing) from ClinicalTrials.gov,
+  openFDA, and earnings calendars.
+
+All three are falsifiable without a single model call. The AI layer deepens the
+research later; it is not a prerequisite for measuring whether the approach works.
+
 | Phase | Deliverable | Status |
 |---|---|---|
 | **0** Foundations | Schema, bitemporal PIT layer, roles + RLS, immutability, job runner, AI cost ledger, docs | ✅ **complete** |
-| **1** Portfolio spine + design system | Auth, mandates, accounts, lot-level positions, manual entry, risk settings, journal, mobile shell, component library | ⬜ next |
-| **2** Market data | Securities master, daily + 1-minute bars, corporate actions, calendars, survivorship-safe universe | ⬜ |
-| **3** Technical engine | Feature computation, pattern detectors, multi-timeframe alignment, forward labeling (R/MAE/MFE), charts | ⬜ |
-| **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates | ⬜ |
-| **5** Paper trading | `BrokerAdapter` + `SimBroker`, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ⬜ |
-| **6** Autonomous paper | Signal → construction → risk → execution loop, continuous evaluation, calibration scoring | ⬜ |
-| **7** Evidence pipeline | EDGAR, ClinicalTrials.gov, openFDA, USAspending, IR/news, change detection, source tiering | ⬜ |
-| **8** AI intelligence | Model router, structured extraction, thesis versioning, conviction/opportunity scoring, briefs, alerts | ⬜ |
-| **9** Discovery & graph | Opportunity discovery, second-order relationships, knowledge graph, "What did I notice?" | ⬜ |
-| **10** Controlled live | Alpaca live adapter, L3 human-approved, then L4 tiny autonomous | ⬜ |
+| **1** Portfolio spine + design system | Auth, mandates, accounts, lot-level positions, manual entry, risk settings, journal, mobile shell, component library | 🔨 **in progress** |
+| **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | ⬜ |
+| **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
+| **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
+| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ⬜ |
+| **6** **Autonomous paper — the goal** | Signal → construction → risk → execution loop running unattended across **all three mandates**; per-mandate equity curves, benchmark comparison, attribution, calibration scoring | ⬜ |
+| **7** Evidence + AI intelligence | Full document pipeline, model router, thesis versioning, conviction scoring, briefs, alerts — *deepens* the mandates rather than enabling them | ⬜ |
+| **8** Discovery & graph | Opportunity discovery, second-order relationships, knowledge graph, "What did I notice?" | ⬜ |
+| **9** Controlled live | Alpaca live adapter, L3 human-approved, then L4 tiny autonomous | ⬜ |
 
-Phases 3 and 4 overlap naturally. Phase 7 has no dependency on 3–6 and can start
-early if catalyst tracking is wanted sooner.
+### What "does it work?" will actually mean at Phase 6
+
+Two independent readings, because either alone is misleading:
+
+1. **Backtest** (Phase 4) — an immediate historical answer over years of data,
+   with walk-forward validation and a trial-count penalty so the Lab cannot
+   manufacture an edge by trying many variants.
+2. **Forward paper** (Phase 6) — real-time, against live prices, which is the
+   only thing that proves the backtest was not fantasy.
+
+**An honest caveat worth setting now:** forward paper trading takes real time.
+Three months at Active-mandate frequency might produce 20–40 trades — enough to
+detect a catastrophic strategy, nowhere near enough to confirm a good one. The
+Catalyst and Long-Term mandates trade far less often, so their forward samples
+will be smaller still. The backtest is what provides statistical weight; forward
+paper is what provides honesty. The scorecard will show sample size and
+confidence alongside every return figure, so a good-looking month is never
+mistaken for evidence.
 
 ---
 

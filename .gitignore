@@ -23,3 +23,6 @@ venv/
 npm-debug.log*
 coverage/
 .vercel
+
+# Local scratch
+shot.mjs
