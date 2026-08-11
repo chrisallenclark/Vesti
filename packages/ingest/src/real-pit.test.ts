@@ -49,9 +49,23 @@ testUrl.pathname = `/${TEST_DB}`;
 const TEST_URL = testUrl.toString();
 
 /**
- * Alpaca's IEX archive begins 2020-07-27, so the window starts just after it.
- * That is a real ceiling on this tier, not a choice: the free feed has no
- * earlier daily history to serve.
+ * The tape both sides of the comparison must read.
+ *
+ * IEX and SIP print different closes for the same session, so a mismatch here
+ * fails the adjustment assertion for a reason that has nothing to do with
+ * adjustment — which is exactly what happened when the provider's default moved
+ * to SIP and this oracle was still pinned to IEX. Naming it once and using it in
+ * both places is what stops that from recurring silently.
+ */
+const TAPE = "sip" as const;
+
+/**
+ * A window inside the archive, not the whole of it.
+ *
+ * The consolidated tape reaches back to 2016-01-04 (D-032), so this is a choice
+ * rather than a ceiling: the window is kept where it is because the assertions
+ * below are calibrated to the splits inside it — AAPL's 4:1 among them — and
+ * widening it is a change to what is being tested, not a free improvement.
  */
 const FROM = "2020-08-03";
 /**
@@ -117,7 +131,7 @@ async function fetchVendorAdjustedCloses(
     url.searchParams.set("start", from);
     url.searchParams.set("end", to);
     url.searchParams.set("limit", "10000");
-    url.searchParams.set("feed", "iex");
+    url.searchParams.set("feed", TAPE);
     url.searchParams.set("adjustment", "split");
     if (pageToken) url.searchParams.set("page_token", pageToken);
 
@@ -184,6 +198,9 @@ before(async () => {
     keyId: KEY_ID as string,
     secretKey: SECRET_KEY as string,
     baseUrl: DATA_BASE_URL,
+    // Pinned rather than inherited: this suite compares against an oracle on a
+    // named tape, so it must not follow the provider's default if that moves.
+    feed: TAPE,
   });
 
   const barReport = await ingestDailyBars(client, provider, SYMBOLS, FROM, TO);

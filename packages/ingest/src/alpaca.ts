@@ -8,14 +8,36 @@ import type {
 /**
  * Alpaca market data.
  *
- * The free tier serves 10 years of history — genuinely enough for pattern
- * sample sizes — but from the IEX tape only. Prices and OHLC structure are
- * broadly sound; volume is roughly 2–3% of consolidated, so RVOL and any
- * volume-confirmation signal derived from it is biased. That is recorded per
- * bar rather than assumed away.
+ * THE FREE TIER SERVES THE FULL CONSOLIDATED TAPE, historically. This was
+ * measured, and it contradicts what this file used to claim: `feed=sip` returns
+ * data from 2016-01-04 onward — daily and 1-minute — with real consolidated
+ * volume, on the same free plan that serves IEX. What the free plan withholds
+ * is *recent* SIP, not SIP.
+ *
+ * The withholding has a sharp edge worth stating, because it is what made SIP
+ * look unavailable: asking for an `end` inside the last fifteen minutes does not
+ * truncate the response, it rejects the whole request with "subscription does
+ * not permit querying recent SIP data". Since a daily backfill naturally ends
+ * at "today", every SIP request made that way fails, and the failure reads like
+ * a plan restriction on the feed itself rather than on its recency. `#clampEnd`
+ * is the whole fix: hold `end` back behind the delay and SIP answers normally.
+ *
+ * IEX remains selectable and is the honest choice for anything real-time, where
+ * a fifteen-minute-old consolidated print is worse than a fresh partial one.
+ * Its volume is roughly 2–3% of consolidated, so RVOL and any volume-confirmation
+ * signal derived from it is biased — which is why the tape is recorded per bar
+ * rather than assumed away, and why history is now fetched from SIP.
  */
 
 const PAGE_LIMIT = 10_000;
+
+/**
+ * How far behind "now" a SIP request has to stay. Alpaca documents fifteen
+ * minutes; the extra minute absorbs clock skew between this process and theirs,
+ * because being wrong by a second here costs the entire request rather than the
+ * single bar at the boundary.
+ */
+const SIP_DELAY_MS = 16 * 60 * 1000;
 
 /**
  * The earliest vendor-supplied date that cannot possibly precede the
@@ -109,6 +131,8 @@ export interface AlpacaOptions {
   feed?: "iex" | "sip";
   /** Injectable for tests; defaults to global fetch. */
   fetchImpl?: typeof fetch;
+  /** Injectable for tests, so the SIP clamp is assertable without waiting. */
+  now?: () => number;
 }
 
 export class AlpacaProvider implements MarketDataProvider {
@@ -120,14 +144,46 @@ export class AlpacaProvider implements MarketDataProvider {
   readonly #baseUrl: string;
   readonly #feed: "iex" | "sip";
   readonly #fetch: typeof fetch;
+  readonly #now: () => number;
 
   constructor(options: AlpacaOptions) {
     this.#keyId = options.keyId;
     this.#secretKey = options.secretKey;
     this.#baseUrl = options.baseUrl ?? "https://data.alpaca.markets";
-    this.#feed = options.feed ?? "iex";
+    // SIP by default: same price, whole tape, and history back to 2016. IEX is
+    // now an opt-in for the real-time path rather than the default everything
+    // inherits.
+    this.#feed = options.feed ?? "sip";
     this.tape = this.#feed;
     this.#fetch = options.fetchImpl ?? globalThis.fetch;
+    this.#now = options.now ?? Date.now;
+  }
+
+  /**
+   * Holds a SIP `end` behind the free plan's fifteen-minute delay.
+   *
+   * Two shapes arrive here. A bare `YYYY-MM-DD` means end-of-day to Alpaca, so
+   * today's date is a future timestamp and is refused even though the caller
+   * meant "everything up to now" — that is the common case, since a backfill
+   * ends at today. A full timestamp is refused only if it genuinely falls
+   * inside the window.
+   *
+   * Clamping rather than erroring is deliberate: the caller asked for all
+   * available history, and all available history is what it gets. The bars
+   * inside the window are the current session's, which the PIT layer will not
+   * serve before its close anyway.
+   */
+  #clampEnd(to: string): string {
+    if (this.#feed !== "sip") return to;
+
+    const requested = /^\d{4}-\d{2}-\d{2}$/.test(to)
+      ? Date.parse(`${to}T23:59:59.999Z`)
+      : Date.parse(to);
+    if (!Number.isFinite(requested)) return to;
+
+    const latest = this.#now() - SIP_DELAY_MS;
+    if (requested <= latest) return to;
+    return new Date(latest).toISOString();
   }
 
   async fetchDailyBars(
@@ -147,7 +203,7 @@ export class AlpacaProvider implements MarketDataProvider {
       url.searchParams.set("symbols", symbols.join(","));
       url.searchParams.set("timeframe", "1Day");
       url.searchParams.set("start", from);
-      url.searchParams.set("end", to);
+      url.searchParams.set("end", this.#clampEnd(to));
       url.searchParams.set("limit", String(PAGE_LIMIT));
       url.searchParams.set("feed", this.#feed);
       // Raw prices only. Requesting adjusted data would bake every later split

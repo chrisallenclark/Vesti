@@ -214,7 +214,9 @@ async function main(): Promise<void> {
     keyId: keyId ?? "",
     secretKey: secretKey ?? "",
     ...(process.env.ALPACA_DATA_BASE_URL ? { baseUrl: process.env.ALPACA_DATA_BASE_URL } : {}),
-    ...(process.env.ALPACA_FEED === "sip" ? { feed: "sip" as const } : {}),
+    // Only "iex" is worth naming now that SIP is the default; anything else,
+    // including unset, takes the full tape.
+    ...(process.env.ALPACA_FEED === "iex" ? { feed: "iex" as const } : {}),
   });
 
   const pool = new pg.Pool({ connectionString, max: 2 });
