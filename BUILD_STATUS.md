@@ -22,11 +22,12 @@ isolation is an executed guarantee rather than a schema property nothing had
 ever exercised. An Active exit for 100 shares fails when Active holds 40 — even
 though the account holds 540 and the broker would sell them.
 
-**Real market data is loaded and the PIT layer is verified against it.** Ten
-years were requested; Alpaca's IEX archive begins 2020-07-27, so ~6 years of
-daily bars for 17 names, with nine real splits among them. The reconstruction is
-checked against the vendor's own split-adjusted series rather than against our
-own generator.
+**Real market data is loaded and the PIT layer is verified against it.** Daily
+bars for 17 names with nine real splits among them, checked against the vendor's
+own split-adjusted series rather than against our own generator. That
+verification ran on the IEX archive (2020-07-27 onward); the tape has since moved
+to consolidated SIP back to 2016-01-04 (D-032), which widens the same check
+rather than changing it.
 
 **The autonomous loop exists and refuses to trade for the right reasons.**
 One command runs a session: reconcile, check the kill switch, catch up on
@@ -73,7 +74,7 @@ research later; it is not a prerequisite for measuring whether the approach work
 |---|---|---|
 | **0** Foundations | Schema, bitemporal PIT layer, roles + RLS, immutability, job runner, AI cost ledger, docs | ✅ **complete** |
 | **1** Portfolio spine + design system | Auth, mandates, accounts, lot-level positions, manual entry, risk settings, journal, mobile shell, component library | 🔨 **in progress** |
-| **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done; fundamentals built but not yet ingested** — the EDGAR layer is complete and tested offline, blocked from running by this environment's egress policy (see below). Catalysts remain |
+| **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done and deepened; EDGAR validated live, not yet ingested** — prices now come from the full consolidated tape back to 2016 (D-032), and the EDGAR parser has been run against 21,936 real facts with zero rejections. Catalysts remain |
 | **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
 | **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
 | **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ✅ **complete** — engine, simulator, gate, Alpaca paper adapter, DB order lifecycle, kill switch and reconciliation, all tested and exercised on a real round trip. Post-trade review moves to Phase 6, where there are trades to review |
@@ -181,10 +182,28 @@ Three defects surfaced that synthetic data could not have shown:
 
 ## EDGAR fundamentals
 
-Built, tested offline, **not yet ingested**: `www.sec.gov` and `data.sec.gov`
-are both denied by this environment's egress policy (403 on CONNECT). That is
-the one thing standing between this and a working Long-Term mandate — see
-*What is needed from outside* below.
+Built, tested offline, and now **validated against live EDGAR**. The egress
+policy that blocked `www.sec.gov` and `data.sec.gov` has been lifted, and the
+parser was run against real filings rather than fixtures:
+
+| | |
+|---|---|
+| Filers | AAPL, MSFT, JNJ, MRNA, BRK.A, F |
+| Facts extracted | 21,936 |
+| Rejected by `validateFact` | **0** |
+| Filing dates spanned | 2009-07-22 → 2026-08-10 |
+| Restated series detected | 1,352 on AAPL alone |
+| `INGESTED_CONCEPTS` present | 35 / 36 |
+
+The one concept never seen — `InterestIncomeExpenseNet` — is a
+financial-sector tag, and none of these six are banks; it is unexercised rather
+than wrong. Two things worth noting from the run: fundamentals reach back to
+**2009**, considerably deeper than price history, so the Long-Term mandate is
+not history-limited; and real filers exercise the restatement path heavily,
+which is exactly what the bitemporal design exists for.
+
+Still not *ingested into Postgres* — that is a database run, not a code
+question, and the code path it needs is now proven end to end.
 
 **Fundamentals are where point-in-time discipline actually bites.** A price is
 knowable the instant it prints, so a sloppy price pipeline misaligns a bar. A
@@ -319,12 +338,16 @@ evidence needed to tell them apart.
 
 Things no amount of code here can supply.
 
-1. **Allowlist `www.sec.gov` and `data.sec.gov`.** Both are refused by this
-   session's egress policy, so the EDGAR layer has never made a real request.
-   Everything below the network call is built and tested; ingestion is one
-   command once the hosts are reachable.
+1. ~~**Allowlist `www.sec.gov` and `data.sec.gov`.**~~ **Done.** Both are
+   reachable and the EDGAR layer has been exercised against real filings. Note
+   for anyone reading a 403 from SEC in future: SEC refuses requests without a
+   real contact in the `User-Agent`, and that refusal looks identical to a
+   policy denial. `EdgarClient` sets one and requires it at construction.
+   `clinicaltrials.gov` and `api.fda.gov` are reachable too, so Catalyst is
+   unblocked whenever it is built.
 2. **A persistent Postgres.** This container is ephemeral and takes the
-   database with it. Code is pushed; data is not.
+   database with it. Code is pushed; data is not. **This is now the single
+   binding external constraint** — every other blocker on this list has cleared.
 3. **A host and a scheduler** for the daily session. A fresh process per run is
    also the recovery path for the proxy DNS latch described below.
 
@@ -367,12 +390,13 @@ Worth stating plainly, because the gap between "foundations complete" and
    quote. Fine for a runner invoked by hand between sessions; wrong for an
    intraday loop, where a stale mark means the risk engine sizes against
    yesterday's equity.
-7. **History starts 2020-07-27, not 2015.** Measured, not requested: that is
-   where Alpaca's IEX archive begins, and the SIP feed returns "subscription
-   does not permit" on the free tier. ~6 years is enough for the splits the PIT
-   layer is verified against and thin for anything wanting a pre-COVID regime in
-   its sample. Any claim about behaviour across regimes is currently a claim
-   about 2020 onward.
+7. **History starts 2016-01-04.** Measured through the provider on free keys:
+   2,666 daily sessions for AAPL on the consolidated tape, against 1,518 on IEX.
+   2018Q4, the February–March 2020 crash and 2022 are all in the sample, so
+   regime stratification and drawdown claims are testable. What is genuinely
+   absent is 2008 — no free Alpaca tier reaches it, and a pre-2016 regime needs a
+   different source rather than a bigger Alpaca plan. An earlier revision of this
+   file claimed ~6 years and no SIP; see D-021 and D-032 for how that was wrong.
 8. **Split announcements are late by construction.** Alpaca publishes no
    declaration date. The ingest derives the tightest bound the vendor's own
    dates support — the record date, typically 1–4 weeks before the ex-date — but
@@ -394,12 +418,14 @@ Worth stating plainly, because the gap between "foundations complete" and
    pessimistic, but a model: it assumes a single intrabar path from a daily bar,
    no queue position, and no venue-specific behaviour. Its purpose is to stop a
    strategy looking better than it is, not to predict any individual fill.
-12. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
-   RVOL, and volume-confirmation signals are biased. Price, structure, and
-   volatility setups validate fine; anything whose edge depends on volume needs
-   a full-tape upgrade (Polygon, ~$79–199/mo) before its backtest means
-   anything. Every bar and feature row records its `tape` so that upgrade
-   recomputes cleanly.
+12. **Volume is now consolidated, not IEX.** This entry previously said the free
+   tier was IEX-only and that volume-dependent strategies needed a ~$79–199/mo
+   upgrade before their backtests meant anything. That was wrong: the free tier
+   serves the full tape historically, and volume features built on it are
+   unbiased (D-032). The residual caveat is narrow — bars ingested *before* the
+   switch carry `tape='iex'` and their volume is still ~2–3% of consolidated, so
+   mixed history must either be filtered by tape or re-ingested. Every bar and
+   feature row records its `tape`, which is what makes that recoverable.
 13. **RLS policies are permissive when unset.** `vesti_current_user_id()`
    returning NULL means unrestricted — correct for migrations and the
    single-user deployment, but the connection pool must set

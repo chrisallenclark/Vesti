@@ -47,10 +47,13 @@ strategy proves it needs microstructure).
 features are biased, so volume-confirmation setups cannot be honestly validated
 until a full-tape upgrade. Recorded per-row via `bar_features.tape`.
 
-> **The reasoning above is partly false — see D-021.** Measured against the live
-> API, the free tier's daily history begins 2020-07-27, not ten years back, and
-> SIP is refused outright. The decision is left standing rather than edited,
-> because it was explicitly chosen; D-021 records the correction and the options.
+> **This decision stands, and its reasoning holds — see D-032.** An earlier note
+> here claimed the free tier had only ~6 years of IEX history and no SIP. That
+> note was wrong: the free tier serves the full consolidated tape from
+> 2016-01-04, so "10 years, enough for sample sizes" is substantially right. The
+> *Known limitation* above is now avoidable rather than inherent — history is
+> fetched from SIP, and IEX applies only to the real-time path. D-021 records the
+> mistaken reading; D-032 records the measurement that replaced it.
 
 ---
 
@@ -412,7 +415,12 @@ reveals itself in the backtest instead of in production.
 ---
 
 ## D-021 — Correction to D-002: the free tier does not have 10 years of history
-**Date:** 2026-08-11 · **Inferred** (measured, and it contradicts an explicit decision)
+**Date:** 2026-08-11 · **Inferred** · **WITHDRAWN the same day — superseded by D-032**
+
+> **This entry was wrong and is kept only so the error is legible.** It measured
+> one feed, read a recency restriction as a feed restriction, and concluded the
+> free tier lacked history it in fact has. Everything below is the mistaken
+> reading; D-032 has the measurement. Nothing should cite this entry as support.
 
 D-002 was chosen partly on the grounds that "Alpaca's free tier includes 10 years
 of 1-minute bars — genuinely enough history for pattern sample sizes." **That
@@ -628,3 +636,47 @@ one written. Consistent with D-019: when the model cannot be honest, it refuses
 rather than approximates.
 
 **Revisit when** intraday bars are available to the simulator.
+
+---
+
+## D-032 — History comes from the consolidated tape; IEX is only for real time
+**Date:** 2026-08-11 · **Inferred** (measured; supersedes D-021 and restores D-002)
+
+`AlpacaProvider` defaults to `feed=sip` and holds the `end` of a SIP request
+sixteen minutes behind now. IEX becomes an explicit opt-in (`ALPACA_FEED=iex`)
+for the real-time path.
+
+**Reasoning.** D-021 claimed the free tier had ~6 years of partial-tape history
+and no SIP. Both halves were wrong, and the error was one request away from being
+caught. What the free plan withholds is *recent* SIP — roughly the last fifteen
+minutes — not SIP. The restriction is enforced in a way that disguises itself:
+an `end` inside that window does not truncate the response, it rejects the whole
+request with `subscription does not permit querying recent SIP data`. A daily
+backfill ends at today by construction, so every SIP request made the natural way
+failed, and the wording of the failure invited exactly the conclusion D-021 drew —
+that the tape was a paid feature.
+
+Measured through `AlpacaProvider` after clamping, one symbol, same free keys:
+
+| | sessions | range | 2020-03-16 volume |
+|---|---|---|---|
+| `sip` | 2,666 | 2016-01-04 → today | 86,579,210 |
+| `iex` | 1,518 | 2020-07-27 → today | absent |
+
+**What this changes.** Roughly ten and a half years of history rather than six,
+and consolidated volume rather than ~2–3% of it. The regime gap D-021 warned
+about does not exist: 2018Q4, the February–March 2020 crash, and 2022 are all
+present, so a strategy can be stratified across a real bear market and a drawdown
+claim can be tested. The volume caveat in D-002 stops being an inherent property
+of the budget and becomes a property of the real-time path alone. No spend is
+required to get any of this.
+
+**Cost of being wrong the other way.** Clamping silently withholds bars inside
+the delay window. Those are the current session's, which the PIT layer refuses to
+serve before its close in any case, so nothing downstream can observe the
+difference. Tape is still recorded per row, so a mixed IEX/SIP history stays
+honest and recomputable.
+
+**Revisit when** the live path needs sub-15-minute consolidated quotes — that is
+what Alpaca's paid tier actually sells, and it is a Phase 5 execution question,
+not a research-data one.
