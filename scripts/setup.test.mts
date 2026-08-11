@@ -42,8 +42,10 @@ describe("parseConnectionString", () => {
   });
 
   it("names the mistake when given only the password", () => {
-    // The exact value that produced ENOTFOUND base.
-    assert.match(errorOf("npg_yrIPLu9XCoY7"), /just a password/);
+    // Shaped like the value that produced ENOTFOUND base — a Neon password and
+    // nothing else. Synthetic on purpose: a real credential does not belong in a
+    // fixture, least of all in a public repository.
+    assert.match(errorOf("npg_EXAMPLEpasswordONLY"), /just a password/);
   });
 
   it("rejects any bare token, not only Neon-shaped ones", () => {
