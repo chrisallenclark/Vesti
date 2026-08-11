@@ -38,7 +38,8 @@ security boundary.
 ## The five invariants
 
 Each is enforced by the database and covered by a test in
-`packages/db/src/invariants.test.ts`.
+`packages/db/src/invariants.test.ts`. Invariants 1 and 3 are additionally
+enforced above the database — see *Execution* below.
 
 ### 1. No look-ahead bias
 
@@ -56,6 +57,19 @@ every historical row. Adjustment is applied at query time from
 
 A backtest standing on 2020-05-25 sees $100 for a stock that split 2-for-1 three
 weeks later. On 2020-07-01 the same bar reads $50. Both are correct.
+
+**`observed_at` is the session's own close, not the download time.** A daily bar
+was knowable to anyone the evening it printed, so a backfill records that rather
+than the moment the job happened to run. Stamping it with `now()` would make an
+entire backfilled history invisible to every as-of date before today — every
+backtest silently returning zero bars. A genuine *revision* is the exception and
+does record publication time, because a corrected figure really was not available
+until it was published.
+
+This is verified end to end rather than asserted: a generated series with known
+ground truth is written through the real ingestion path and read back through the
+real PIT functions, and the reconstructed continuous price must match the truth
+to within the cent the vendor rounds to.
 
 **Survivorship** is handled the same way: delisted securities stay in the master
 with `delisted_at` set, and `pit_universe(date)` returns everything listed on
@@ -84,6 +98,18 @@ exceed what was approved.
 
 An LLM produces an **intent**. The deterministic risk engine produces the
 **ruling**. Only a matching approval yields a submittable order.
+
+The same rule is enforced a second time at the broker boundary by
+`guardedBroker`, which wraps *any* adapter and refuses an order that has no
+evaluation, presents an unknown or expired one, presents one issued for a
+different symbol or side, exceeds the approved quantity, or arrives while the
+kill switch is tripped. It is a wrapper rather than a rule each adapter
+implements, so adding a broker cannot reintroduce the hole — and there is no way
+to reach the inner adapter from outside it.
+
+Cancellation is deliberately never gated: blocking a cancel during a kill-switch
+event would trap working orders in the market at exactly the moment someone
+decided to stop trading.
 
 ### 4. Mandate isolation
 
@@ -116,9 +142,14 @@ believed at entry.
 ## Repository layout
 
 ```
-apps/web/            Next.js 15 PWA. Presentation only — no domain logic.
+apps/web/            Next.js 16 PWA. Presentation only — no domain logic.
 packages/db/         Migrations, migration runner, invariant tests.
-packages/core/       Domain types and the deterministic risk engine.
+packages/core/       Domain logic, all pure and all tested:
+                       risk/     deterministic sizing engine with veto power
+                       broker/   BrokerAdapter, execution gate, SimBroker
+                       market/   US equity trading calendar
+                       sim/      seeded PRNG, synthetic series with ground truth
+packages/ingest/     Market data providers and the bitemporal write path.
 services/quant/      Python: features, patterns, backtest, Monte Carlo.
 docs/                Long-form design notes.
 ```
@@ -126,6 +157,60 @@ docs/                Long-form design notes.
 **API-first constraint.** All domain logic sits behind versioned JSON handlers
 under `/api/v1`; components display, never compute. This keeps a future
 Expo/TestFlight client a frontend-only project rather than a rewrite.
+
+---
+
+## Execution
+
+Three components, all pure and all deterministic, sitting between a strategy's
+intent and a venue.
+
+**Risk engine** (`packages/core/src/risk/`). `evaluate(intent, portfolio,
+market, limits)` returns an approve/reduce/reject ruling with the reasoning that
+produced it. Eleven sizing steps, each of which can only *reduce*: base
+fractional risk, volatility, conviction tier (bounded, never unbounded),
+drawdown ladder, portfolio heat, concentration caps, liquidity, event risk, cash
+floor. `Math.floor` is applied last, so rounding cannot push a position back
+above a cap. Sells are always approved — blocking an exit would trap the very
+position causing the breach. Verified by hand-written adversarial cases plus a
+property test over 4,000 seeded scenarios asserting no hard cap is ever exceeded.
+
+**Broker adapter** (`packages/core/src/broker/`). One interface, three
+implementations over the project's life: `SimBroker`, Alpaca paper, Alpaca live.
+A broker deliberately does not know about mandates — a real one holds a single
+omnibus position per symbol with one average cost, which is exactly why our
+specific-lot ledger exists alongside it and gets reconciled against it.
+
+**The simulator fills pessimistically, on purpose.** No same-bar signal and
+fill: an order submitted on session T is not eligible until T+1. Resting limits
+must be traded *through*, not merely touched. Stops gap. Triggered stop-limits
+that never see their limit do not fill. Rounding always goes against the trader.
+Fills are capped at a participation limit per bar, so a strategy that only works
+at sizes the tape cannot absorb reveals itself here rather than in production.
+Market impact follows the square-root law, which matters most in the regime a
+linear model gets dangerously wrong — large orders.
+
+No randomness anywhere: same orders, same bars, same fills, always. A failing
+backtest that cannot be reproduced cannot be debugged.
+
+---
+
+## Verification strategy
+
+The deterministic core is tested against **known ground truth**, not against
+plausibility.
+
+A seeded generator produces raw OHLCV, splits and dividends while retaining the
+true split-continuous price of every session. Because the correct answer exists
+before the test runs, an adjustment applied in the wrong direction or a bar
+alignment off by one *fails* rather than looking like a mediocre strategy. The
+generator emits raw prints (a 4:1 split quarters the price and quadruples the
+volume), announces every action strictly before its ex-date, and builds each bar
+from a simulated intrabar path so high and low genuinely bound open and close —
+data that could not exist teaches nothing.
+
+It also means the whole pipeline runs offline. Swapping in a real vendor is a
+change of one constructor.
 
 ---
 

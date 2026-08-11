@@ -15,7 +15,7 @@
     "db:migrate": "npm run migrate -w @vesti/db",
     "db:reset": "npm run reset -w @vesti/db",
     "db:test": "npm run test -w @vesti/db",
-    "typecheck": "tsc --build --pretty",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
     "test": "npm run test --workspaces --if-present"
   },
   "devDependencies": {

@@ -205,20 +205,52 @@ describe("ingestDailyBars", () => {
     }
   });
 
-  it("feeds the PIT layer, which still hides bars from before they were observed", async () => {
+  it("dates a backfilled bar to its own session close, not to download time", async () => {
     const client = await pool.connect();
     try {
-      // The whole point of ingestion is to supply the PIT layer without
-      // breaking it. An as-of BEFORE any ingestion must return nothing.
-      const { rows: past } = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM pit_bars_daily(TIMESTAMPTZ '2024-01-01 00:00Z')`,
+      // This is what makes backfilled history usable at all. If ingestion
+      // stamped observed_at with the moment it happened to run, a ten-year
+      // backfill performed today would be invisible to every as-of before
+      // today, and every backtest would silently see zero bars.
+      const { rows } = await client.query<{ observed_at: Date }>(
+        // A session this suite never revises — a revision legitimately moves
+        // observed_at to publication time, which is a different rule.
+        `SELECT observed_at FROM bars_daily WHERE session_date = DATE '2024-03-19'`,
       );
-      assert.equal(past[0]!.count, "0", "bars observed later must be invisible to an earlier as-of");
+      assert.equal(
+        rows[0]!.observed_at.toISOString(),
+        "2024-03-19T22:00:00.000Z",
+        "a daily bar becomes knowable after its own close",
+      );
+    } finally {
+      client.release();
+    }
+  });
 
-      const { rows: now } = await client.query<{ count: string }>(
-        `SELECT count(*)::text AS count FROM pit_bars_daily(now())`,
+  it("feeds the PIT layer, which still refuses to show a bar before its close", async () => {
+    const client = await pool.connect();
+    try {
+      // An as-of before the first session existed must return nothing...
+      const { rows: past } = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count FROM pit_bars_daily(TIMESTAMPTZ '2023-01-01 00:00Z')`,
       );
-      assert.ok(Number(now[0]!.count) > 0, "and visible once the as-of catches up");
+      assert.equal(past[0]!.count, "0");
+
+      // ...and neither must the morning of a session show that session's bar,
+      // which is the exact shape of look-ahead a naive backfill introduces.
+      const { rows: intraday } = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+         FROM pit_bars_daily(TIMESTAMPTZ '2024-03-19 13:30Z', NULL,
+                             DATE '2024-03-19', DATE '2024-03-19')`,
+      );
+      assert.equal(intraday[0]!.count, "0", "the open is not the time to know the close");
+
+      const { rows: settled } = await client.query<{ count: string }>(
+        `SELECT count(*)::text AS count
+         FROM pit_bars_daily(TIMESTAMPTZ '2024-03-19 23:00Z', NULL,
+                             DATE '2024-03-19', DATE '2024-03-19')`,
+      );
+      assert.equal(settled[0]!.count, "1", "and visible once the session has closed");
     } finally {
       client.release();
     }

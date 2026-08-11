@@ -23,6 +23,15 @@ export interface IngestReport {
  *   `observed_at` — because the corrected figure genuinely was not knowable
  *   until the vendor published it.
  *
+ * `observed_at` on a first insert is the SESSION's own close, not the moment we
+ * downloaded it. The PIT layer asks "could this have been known then?", not
+ * "when did this machine happen to fetch it" — and a ten-year backfill run today
+ * with observed_at = now() would make the entire history invisible to every
+ * as-of date before today, silently reducing any backtest to zero bars. The
+ * price that printed on a given session was knowable to anyone that evening, so
+ * that is what gets recorded. A revision is the genuine exception, and keeps
+ * now(): the corrected number really was not available until it was published.
+ *
  * Known simplification: only the latest revision is retained, since the primary
  * key is (security_id, session_date). A backtest therefore sees revised values
  * from the revision's observation time onward, but cannot reconstruct the
@@ -87,9 +96,14 @@ export async function ingestDailyBars(
 
     if (prior === undefined) {
       await client.query(
+        // 22:00 UTC is comfortably after the 4pm ET close in either DST offset,
+        // and after the vendor consolidation window. Erring late is the safe
+        // direction: it can only withhold data from a backtest, never leak it
+        // early. `least(now(), ...)` covers fetching today's bar mid-session.
         `INSERT INTO bars_daily
-           (security_id, session_date, open, high, low, close, volume, trade_count, vwap, tape, source_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+           (security_id, session_date, open, high, low, close, volume, trade_count, vwap, tape, source_id, observed_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 least(now(), ($2::date + interval '22 hours') AT TIME ZONE 'UTC'))`,
         [
           securityId,
           bar.sessionDate,

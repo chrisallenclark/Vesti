@@ -11,7 +11,12 @@ trading before building the research/AI layer.
 rest of the system depends on. 25 automated assertions pass against a database
 built from nothing.
 
-Nothing is tradable yet, and no strategy exists. That is expected at this stage —
+**Phase 5's deterministic core is complete and ahead of schedule** — risk engine,
+synthetic market generator, broker adapter, and execution gate — because none of
+it needs network access or a broker key, and because everything downstream
+depends on it being correct. **159 tests pass** across the four packages.
+
+No strategy exists yet, so nothing decides *what* to trade. That is Phase 4 —
 see *Honest limitations* below.
 
 ---
@@ -46,7 +51,7 @@ research later; it is not a prerequisite for measuring whether the approach work
 | **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | ⬜ |
 | **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
 | **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
-| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ⬜ |
+| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | 🔨 **core complete** — engine, simulator, and gate built and tested; Alpaca adapter and DB order lifecycle remain |
 | **6** **Autonomous paper — the goal** | Signal → construction → risk → execution loop running unattended across **all three mandates**; per-mandate equity curves, benchmark comparison, attribution, calibration scoring | ⬜ |
 | **7** Evidence + AI intelligence | Full document pipeline, model router, thesis versioning, conviction scoring, briefs, alerts — *deepens* the mandates rather than enabling them | ⬜ |
 | **8** Discovery & graph | Opportunity discovery, second-order relationships, knowledge graph, "What did I notice?" | ⬜ |
@@ -85,6 +90,8 @@ mistaken for evidence.
 | `004_portfolio_risk_strategy.sql` | `mandates`, `accounts`, `cash_ledger`, `lots`, risk tables, `strategies`/`strategy_versions`, `setups`/`setup_versions`, `orders`, `fills`, `order_lot_allocations`, `pre_trade_records`, `decision_snapshots`, `post_trade_reviews`, `journal_entries` |
 | `005_roles_rls_immutability.sql` | Four roles + grants, RLS policies, append-only triggers, `orders_risk_gate` |
 | `006_jobs_and_ai_ledger.sql` | `jobs` + `vesti_claim_jobs`/`vesti_fail_job`/`vesti_reclaim_expired_jobs`, `ai_calls`, `ai_model_pricing`, `ai_budgets`, `vesti_ai_cost`, `vesti_ai_budget_check` |
+| `007_synthetic_source.sql` | `sources` row for generated data, tiered lowest so nothing synthetic can outrank a real print |
+| `008_partition_provisioning.sql` | Partition functions as `SECURITY DEFINER`, so ingest can provision without holding `CREATE` on the schema |
 
 ### Verified behaviour
 
@@ -119,23 +126,35 @@ poison job retires to `dead` rather than looping.
 Worth stating plainly, because the gap between "foundations complete" and
 "working system" is where optimism usually creeps in.
 
-1. **Nothing can trade.** No broker adapter, no risk engine implementation, no
-   order lifecycle. Phase 5.
-2. **No strategy exists.** The Strategy Lab is Phase 4. A legitimate outcome of
-   it is *"none of these setups have an edge"* — that is a finding, not a
-   failure.
-3. **No market data is loaded.** The schema is ready; ingestion is Phase 2.
-4. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
+1. **Nothing decides what to trade.** The risk engine can size and veto, the
+   simulator can fill, the gate can refuse — but no strategy produces an intent
+   for any of them to act on. The Strategy Lab is Phase 4, and a legitimate
+   outcome of it is *"none of these setups have an edge"* — that is a finding,
+   not a failure.
+2. **The order lifecycle is not yet wired to the database.** `SimBroker` keeps
+   its own in-memory state. Writing fills into `lots`, `cash_ledger`, and
+   `order_lot_allocations` under the specific-lot rules is the remaining half of
+   Phase 5.
+3. **No real market data is loaded.** The pipeline works end to end against the
+   synthetic provider; the sandbox's network policy blocks every external host,
+   so Alpaca ingestion has not been exercised against a live endpoint. That is an
+   environment constraint, not a code gap — the provider interface is the only
+   thing that changes.
+4. **The simulator's fill model is a model.** Realistic and deliberately
+   pessimistic, but a model: it assumes a single intrabar path from a daily bar,
+   no queue position, and no venue-specific behaviour. Its purpose is to stop a
+   strategy looking better than it is, not to predict any individual fill.
+5. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
    RVOL, and volume-confirmation signals are biased. Price, structure, and
    volatility setups validate fine; anything whose edge depends on volume needs
    a full-tape upgrade (Polygon, ~$79–199/mo) before its backtest means
    anything. Every bar and feature row records its `tape` so that upgrade
    recomputes cleanly.
-5. **RLS policies are permissive when unset.** `vesti_current_user_id()`
+6. **RLS policies are permissive when unset.** `vesti_current_user_id()`
    returning NULL means unrestricted — correct for migrations and the
    single-user deployment, but the connection pool must set
    `vesti.current_user_id` per request before multi-user ships.
-6. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
+7. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
    rows until one is inserted; the router must treat "no budget configured" as
    deny, not allow.
 

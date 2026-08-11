@@ -269,3 +269,136 @@ diverged schema is a quiet, expensive one.
 
 **Alternatives.** Warn instead of refuse (the warning gets ignored). No checksum
 (drift is undetectable).
+
+---
+
+## D-015 — A backfilled bar is dated to its own session close, not to download time
+**Date:** 2026-08-11 · **Inferred** (discovered by a failing test)
+
+`observed_at` on a first insert is `least(now(), session_date 22:00 UTC)`. Only a
+genuine *revision* gets `now()`.
+
+**Reasoning.** The PIT layer asks "could this have been known then?", not "when
+did this machine fetch it". Stamping a ten-year backfill with the moment the
+download ran makes the entire history invisible to every as-of date before today
+— every backtest silently returns zero bars. The price that printed on a given
+session was knowable to anyone that evening, so that is what gets recorded.
+
+A revision is the real exception and keeps `now()`: a corrected figure genuinely
+was not available until the vendor published it.
+
+22:00 UTC is after the 4pm ET close in either DST offset. Erring *late* is the
+safe direction — it can withhold data from a backtest, never leak it early.
+
+**How it surfaced.** The first end-to-end PIT test returned zero rows. The
+database was right and the ingestion semantics were wrong.
+
+---
+
+## D-016 — Partition provisioning is a delegated capability, not a schema grant
+**Date:** 2026-08-11 · **Inferred**
+
+`vesti_ensure_daily_partition` / `vesti_ensure_intraday_partition` are
+`SECURITY DEFINER` with a pinned `search_path`, executable only by
+`vesti_research`.
+
+**Reasoning.** Ingest must create the partition a batch lands in, but
+`CREATE TABLE ... PARTITION OF` runs with the caller's privileges. The obvious
+fix — `GRANT CREATE ON SCHEMA public TO vesti_research` — hands the role most
+exposed to untrusted external feeds the ability to create arbitrary objects in
+the schema everything resolves against. The narrow grant gives it exactly one
+capability instead: create a correctly-shaped partition of a table it already
+writes to.
+
+**Alternatives.** Pre-create decades of partitions (wasteful, and still fails at
+the boundary). Run a privileged provisioning job separately (a second moving
+part, and ingest fails until it runs).
+
+---
+
+## D-017 — Synthetic market data is a first-class source with known ground truth
+**Date:** 2026-08-11 · **Explicitly chosen**
+
+A deterministic seeded generator produces raw OHLCV, splits, and dividends, and
+retains the true continuous price of every session. It has its own `sources` row
+(`tier4_social`, the lowest tier) and every bar is tagged `tape = 'synthetic'`.
+
+**Reasoning.** A backtester checked only against real prices can be checked for
+*plausibility* and nothing more — there is no independent answer to compare
+against, so an adjustment applied in the wrong direction or a bar alignment off
+by one looks exactly like a mediocre strategy. With generated data the correct
+answer exists before the test runs.
+
+It also unblocks the entire pipeline offline: no key, no network, no vendor.
+Real data becomes a config change — swap the provider, re-run.
+
+Three properties are load-bearing: prices are emitted **raw** (a 4:1 split
+quarters the print and quadruples the volume); every action is announced
+strictly **before** its ex-date; and bars are built from a simulated intrabar
+path so high and low genuinely bound open and close. Data that could not exist
+teaches nothing.
+
+---
+
+## D-018 — The execution gate is a wrapper, not a rule each broker implements
+**Date:** 2026-08-11 · **Explicitly chosen**
+
+`guardedBroker(inner, guards)` wraps any `BrokerAdapter` and refuses orders on
+five grounds: kill switch tripped, no risk evaluation, unknown evaluation, an
+evaluation for a different symbol or side, a quantity above the approved size,
+or an expired approval.
+
+**Reasoning.** If each adapter checked for itself, adding a broker would mean
+re-deriving the safety properties, and forgetting a check would be a silent hole
+rather than a structural impossibility. There is deliberately no way to reach
+the inner adapter from outside the wrapper — a guard you can route around is a
+suggestion.
+
+**Cancellation is never gated.** Blocking a cancel during a kill-switch event
+would trap working orders in the market at exactly the moment someone decided to
+stop trading.
+
+---
+
+## D-019 — Fill assumptions are deliberately pessimistic
+**Date:** 2026-08-11 · **Explicitly chosen** (brief: "no same-bar signal-and-fill")
+
+The `SimBroker` fills worse than reality would in several specific ways:
+
+- **No same-bar signal and fill.** An order submitted on session T is not
+  eligible until T+1. A strategy that decides from a bar's close cannot also
+  transact inside it. This one rule separates most impressive backtests from
+  most honest ones.
+- **A resting limit must be traded *through*, not merely touched** — touching
+  your price does not clear the queue ahead of you. A gap in your favour is
+  honoured, because a market that opens past your limit does fill you there.
+- **A stop is not a guarantee.** A gap past the stop fills at the open, below it.
+- **A triggered stop-limit that never sees its limit does not fill** — the way
+  stop-limits actually fail people in fast markets.
+- **Rounding always goes against the trader**, in both directions.
+- **Fills are capped at a participation limit per bar.** A `day` order the tape
+  could not absorb expires partially filled.
+
+**Reasoning.** A backtest is an argument that a strategy works, and the cheapest
+way to win it dishonestly is to fill optimistically. Every assumption here is
+chosen so that a strategy which survives is more likely to survive contact with
+a real venue.
+
+**Determinism over realism-by-jitter.** No randomness in fills: same orders,
+same bars, same results, always. A failing backtest that cannot be reproduced
+cannot be debugged.
+
+---
+
+## D-020 — Market impact follows the square-root law
+**Date:** 2026-08-11 · **Inferred**
+
+Impact ≈ price × ATR-fraction × √(quantity / bar volume).
+
+**Reasoning.** Impact is empirically concave in size, not linear. A linear model
+over-penalises small orders and — far more dangerously — *under*-penalises large
+ones, which is precisely the regime where a strategy's capacity limit lives. The
+square-root form is the standard empirical result and is physically motivated.
+
+**Consequence.** A strategy that only works at sizes the tape cannot absorb
+reveals itself in the backtest instead of in production.

@@ -5,6 +5,18 @@ dist/
 build/
 *.tsbuildinfo
 
+# TypeScript emit. Nothing in packages/ is compiled to disk — tsx runs the
+# sources directly — so any .js next to a .ts here is accidental build output.
+packages/**/*.js
+packages/**/*.js.map
+packages/**/*.d.ts
+apps/web/src/**/*.js
+apps/web/src/**/*.js.map
+apps/web/src/**/*.d.ts
+apps/web/next.config.js
+apps/web/next.config.js.map
+apps/web/next.config.d.ts
+
 .env
 .env.local
 .env.*.local
