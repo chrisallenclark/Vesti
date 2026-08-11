@@ -6,3 +6,6 @@ export * from "./sim/generator.ts";
 export * from "./broker/types.ts";
 export * from "./broker/guard.ts";
 export * from "./broker/sim.ts";
+export * from "./strategy/types.ts";
+export * from "./strategy/indicators.ts";
+export * from "./strategy/trend-pullback.ts";

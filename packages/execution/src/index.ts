@@ -47,3 +47,25 @@ export {
   findSelfCrosses,
   type SelfCross,
 } from "./selfcross.ts";
+
+export { runSession, type LoopOptions, type LoopOutcome } from "./loop.ts";
+export {
+  killSwitchState,
+  isKillSwitchTripped,
+  resetKillSwitch,
+  tripKillSwitch,
+  type KillSwitchState,
+} from "./killswitch.ts";
+export { equityCurve, snapshotEquity, type MandateSnapshot } from "./equity.ts";
+export {
+  currentStanding,
+  promoteStrategy,
+  registerStrategy,
+  type RegisteredStrategy,
+} from "./strategy-registry.ts";
+export {
+  allocateByTargetWeight,
+  capitalPosition,
+  recordDeposit,
+  type CapitalPosition,
+} from "./capital.ts";

@@ -29,9 +29,20 @@
  * comparison against the broker's cumulative state will find it.
  */
 
+import type { BrokerOrderState } from "@vesti/core/broker/types.ts";
 import type { OrderLedger, PostedFill } from "./ledger.ts";
-import type { AlpacaBroker } from "./alpaca.ts";
 import type { LotMethod } from "./lots.ts";
+
+/**
+ * The one thing polling needs from a broker: an order looked up by OUR id.
+ *
+ * Structural rather than the concrete adapter, so the loop can be driven by a
+ * stub in tests. A refusal path that can only be exercised against a live venue
+ * is a refusal path nobody exercises.
+ */
+export interface FillPollingBroker {
+  getOrderByClientId(clientOrderId: string): Promise<BrokerOrderState | null>;
+}
 
 export interface FillSourceOptions {
   /** Which lots exits consume. */
@@ -56,7 +67,7 @@ export interface FillSourceOptions {
  * deliberately does not invent one.
  */
 export async function pollFills(
-  broker: AlpacaBroker,
+  broker: FillPollingBroker,
   ledger: OrderLedger,
   orderIds: readonly string[],
   options: FillSourceOptions = {},

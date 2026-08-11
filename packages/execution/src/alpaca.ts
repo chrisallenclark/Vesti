@@ -286,10 +286,17 @@ export class AlpacaBroker implements BrokerAdapter {
   /**
    * One request, retried through transient failure.
    *
-   * Alpaca's paper endpoint returns 503 intermittently — observed on a plain
-   * account read that succeeded on the retry moments later. An adapter that
-   * gives up on the first one cannot run unattended, and "the overnight job
-   * died on a blip" is a bad way to discover that.
+   * Venues return 5xx and rate-limit, and an adapter that gives up on the first
+   * one cannot run unattended — "the overnight job died on a blip" is a bad way
+   * to discover that.
+   *
+   * One failure this CANNOT fix, and says so instead: an egress proxy answering
+   * 503 with a DNS resolution failure. Observed in a sandboxed environment,
+   * where it latches for the lifetime of the process — every request from that
+   * process fails while a neighbouring one succeeds, because the resolver
+   * result is cached below this layer. Retrying inside the process is futile,
+   * so the error names the cause rather than blaming the venue, and recovery is
+   * a fresh process (which a scheduler provides for free).
    *
    * Retries cover 5xx, 429 and transport errors. A 4xx is never retried: the
    * venue understood the request and refused it, and repeating it just refuses
@@ -318,7 +325,20 @@ export class AlpacaBroker implements BrokerAdapter {
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
       try {
         const response = await this.#fetch(url, init);
-        if (!isRetryable(response.status) || attempt === RETRY_DELAYS_MS.length) return response;
+        if (isProxyDnsFailure(response.status)) {
+          const body = await response.text().catch(() => "");
+          if (/dns resolution failure/i.test(body)) {
+            throw new Error(
+              `Egress proxy could not resolve ${url.hostname} (503, DNS resolution failure). ` +
+                `This is the network path, not the venue, and it does not clear within a ` +
+                `process — rerun. Alpaca itself is reachable if curl succeeds.`,
+            );
+          }
+          // A genuine 503 from the venue, which retrying may well fix.
+          if (attempt === RETRY_DELAYS_MS.length) return response;
+        } else if (!isRetryable(response.status) || attempt === RETRY_DELAYS_MS.length) {
+          return response;
+        }
       } catch (error) {
         lastError = error;
         if (attempt === RETRY_DELAYS_MS.length) throw error;
@@ -333,6 +353,10 @@ const RETRY_DELAYS_MS = [250, 1000, 3000];
 
 function isRetryable(status: number): boolean {
   return status >= 500 || status === 429;
+}
+
+function isProxyDnsFailure(status: number): boolean {
+  return status === 503;
 }
 
 /**

@@ -10,7 +10,8 @@
   },
   "scripts": {
     "test": "tsx --test src/*.test.ts",
-    "paper": "tsx src/paper.ts"
+    "paper": "tsx src/paper.ts",
+    "session": "tsx src/session.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

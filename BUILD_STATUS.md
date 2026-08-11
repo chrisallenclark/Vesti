@@ -28,11 +28,18 @@ daily bars for 17 names, with nine real splits among them. The reconstruction is
 checked against the vendor's own split-adjusted series rather than against our
 own generator.
 
+**The autonomous loop exists and refuses to trade for the right reasons.**
+One command runs a session: reconcile, check the kill switch, catch up on
+fills, evaluate promoted strategies, size, submit, mark equity. It halts on a
+drifted ledger, a tripped switch, a closed market, or an unpromoted strategy —
+and marks the equity curve even when it halts, because a gap in the curve
+cannot be filled in later.
+
 **A paper trade has been placed through the whole chain.** 1 AAPL bought at
 $305.27 and sold at $305.02 on the Alpaca paper account, via intent → risk
 ruling → execution gate → venue → fill → lot → cash → reconciliation. Realised
 −$0.25; Alpaca's cash moved by exactly −$0.25 and so did the mandate's ledger.
-**212 tests pass** across five packages.
+**237 tests pass** across five packages.
 
 No strategy exists yet, so nothing decides *what* to trade. That is Phase 4 —
 see *Honest limitations* below.
@@ -69,8 +76,8 @@ research later; it is not a prerequisite for measuring whether the approach work
 | **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done** — daily bars and corporate actions ingested from Alpaca and verified against the PIT layer; fundamentals and catalysts remain |
 | **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
 | **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
-| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | 🔨 **trading** — engine, simulator, gate, Alpaca paper adapter, DB order lifecycle and reconciliation all built, tested and exercised on a real round trip; post-trade review and a way to trip the kill switch remain |
-| **6** **Autonomous paper — the goal** | Signal → construction → risk → execution loop running unattended across **all three mandates**; per-mandate equity curves, benchmark comparison, attribution, calibration scoring | ⬜ |
+| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | ✅ **complete** — engine, simulator, gate, Alpaca paper adapter, DB order lifecycle, kill switch and reconciliation, all tested and exercised on a real round trip. Post-trade review moves to Phase 6, where there are trades to review |
+| **6** **Autonomous paper — the goal** | Signal → construction → risk → execution loop running unattended across **all three mandates**; per-mandate equity curves, benchmark comparison, attribution, calibration scoring | 🔨 **loop built** — one command runs a full session with promotion gate, kill switch, reconciliation gate and per-mandate equity snapshots; it has nothing validated to run, and benchmark/attribution reporting remains |
 | **7** Evidence + AI intelligence | Full document pipeline, model router, thesis versioning, conviction scoring, briefs, alerts — *deepens* the mandates rather than enabling them | ⬜ |
 | **8** Discovery & graph | Opportunity discovery, second-order relationships, knowledge graph, "What did I notice?" | ⬜ |
 | **9** Controlled live | Alpaca live adapter, L3 human-approved, then L4 tiny autonomous | ⬜ |
@@ -111,6 +118,7 @@ mistaken for evidence.
 | `007_synthetic_source.sql` | `sources` row for generated data, tiered lowest so nothing synthetic can outrank a real print |
 | `008_partition_provisioning.sql` | Partition functions as `SECURITY DEFINER`, so ingest can provision without holding `CREATE` on the schema |
 | `009_fill_idempotency.sql` | Partial unique index on `fills (order_id, broker_fill_id)` — the deduplication key for replayed broker fills |
+| `010_equity_and_reconciliation.sql` | `equity_snapshots` (the daily per-mandate mark) and `reconciliation_runs` |
 
 ### Verified behaviour
 
@@ -192,6 +200,41 @@ at all.
 attributed to the mandate that traded. The balance is a fold, so it cannot drift
 from its entries.
 
+## Running it unattended
+
+```bash
+npm run session -w @vesti/execution -- --status      # what it would do, and why not
+npm run session -w @vesti/execution -- --deposit 100000
+npm run session -w @vesti/execution -- --register
+npm run session -w @vesti/execution                  # one session
+npm run session -w @vesti/execution -- --halt "reason"
+npm run session -w @vesti/execution -- --resume "reason"
+```
+
+**Five refusals, all tested against a real database.** A drifted ledger, a
+tripped kill switch, a closed market, an unpromoted strategy, a position sized
+below one share. Every one of them marks the equity curve anyway.
+
+**The promotion gate is what makes this safe to leave running.** A strategy
+trades only at `paper_approved` or above; registration puts it at
+`experimental`, promotion moves one rung at a time with a mandatory rationale,
+and live is not reachable by this route at all. **The role that trades cannot
+promote** — `vesti_execution` has no write access to `strategies`, so the
+registry connects as `vesti_research`. An execution service able to authorise
+its own strategies would make the ladder decorative.
+
+**The kill switch is now a control rather than a claim.** It can be tripped,
+it halts the session and the gate refuses orders while it is set, a second trip
+does not bury the first reason, and resetting requires quoting that reason back
+— because the way a kill switch fails is being cleared by whoever is most
+inconvenienced by it before anybody established what happened.
+
+**Capital is asserted, never inferred.** `--deposit` records an external
+contribution and splits it across mandates by target weight, double-entry, so
+the mandates always sum to the account. Reading the broker's balance and making
+ours match would paper over exactly the drift reconciliation exists to catch: an
+unrecorded fill and a real deposit both look like "our number is low".
+
 ## The first paper trade
 
 `npm run paper -w @vesti/execution -- --symbol AAPL --quantity 1 --mandate active`
@@ -206,10 +249,14 @@ Audit chain intact across all eleven rows.
 
 Three defects surfaced that no test had:
 
-1. **Alpaca's paper endpoint returns 503 intermittently** — on a plain account
-   read that succeeded moments later. The adapter now retries 5xx, 429 and
-   transport errors with backoff, and resolves a duplicate `client_order_id`
-   to the order that already exists, which is what makes retrying a POST safe.
+1. **Requests failed with a 503 that was not Alpaca's.** First read as a venue
+   blip; it is the sandbox's egress proxy answering `DNS resolution failure`,
+   and it *latches for the lifetime of the process* — one Node process failed
+   six consecutive reads while a neighbouring one succeeded six. Retrying
+   inside the process cannot fix it, so the adapter names the cause instead of
+   blaming the venue. It still retries genuine 5xx, 429 and transport errors,
+   and resolves a duplicate `client_order_id` to the order that already exists,
+   which is what makes retrying a POST safe.
 2. **The trade-updates stream sends JSON inside BINARY frames.** Left at the
    default `blob`, every message decoded to the literal string `"[object Blob]"`
    and the stream silently delivered nothing. The first live order filled anyway
@@ -239,10 +286,13 @@ Worth stating plainly, because the gap between "foundations complete" and
    for any of them to act on. The Strategy Lab is Phase 4, and a legitimate
    outcome of it is *"none of these setups have an edge"* — that is a finding,
    not a failure.
-2. **Nothing decides *when* to trade either.** `paper.ts` is a runner a human
-   invokes with a symbol and a quantity. The autonomous loop — signal,
-   construction, risk, execution, unattended — is Phase 6, and it needs the
-   strategies from Phase 4 before it has anything to run.
+2. **The loop has nothing validated to run.** `active.trend_pullback` exists so
+   the interface is exercised by an implementation rather than a stub. It has
+   been through no backtest, no walk-forward, no regime stratification and no
+   trial-count deflation, because none of those exist yet. It ships at
+   `experimental` and the loop will not touch it until somebody promotes it by
+   hand. If it is promoted and makes money for a month, that is not evidence —
+   twenty trades cannot separate an edge from luck.
 3. **Two mandates cannot trade one symbol in opposite directions.** Legal in our
    model, a wash trade at a single omnibus account. `selfcross.ts` detects it
    and refuses before submission, which is better than a cryptic venue
@@ -251,9 +301,9 @@ Worth stating plainly, because the gap between "foundations complete" and
    residual — and that changes what a fill means, since an internal cross has no
    broker fill to reconcile against. Deferred to the Phase 6 execution loop
    deliberately rather than by omission.
-4. **The kill switch has never been tripped.** `guardedBroker` consults it on
-   every order and the table exists, but nothing sets it and no test has watched
-   a live order be refused by it. An untested safety mechanism is a claim.
+4. **Only the Active mandate has a strategy at all.** Long-Term needs EDGAR
+   fundamentals and Catalyst needs the event calendar — both Phase 2 — so two
+   of the three mandates cannot produce a signal yet whatever the loop does.
 5. **Position sizing values holdings at the last daily close**, not a live
    quote. Fine for a runner invoked by hand between sessions; wrong for an
    intraday loop, where a stale mark means the risk engine sizes against
@@ -311,7 +361,7 @@ npm install
 npm run db:migrate        # apply migrations
 npm run db:status         # what is applied vs pending
 npm run db:test           # 25 invariant assertions on a fresh database
-npm test                  # everything: 212 assertions across five packages
+npm test                  # everything: 237 assertions across five packages
 ```
 
 Loading real data needs Alpaca keys in `.env`:
