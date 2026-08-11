@@ -336,4 +336,29 @@ describe("EdgarClient", () => {
     });
     await assert.rejects(() => client.fetchCompanyFacts("1"), /EDGAR request failed: 429/);
   });
+
+  /**
+   * SPY is the case that found this: an ETF has a CIK and sits in the ticker
+   * file, but files no XBRL facts, so `companyfacts` 404s. Raising that as an
+   * error aborts the whole run at whichever ETF sorts first and loses every
+   * filer after it — which is precisely what a real universe run did.
+   */
+  it("reports a filer with no XBRL facts as absent rather than failing", async () => {
+    const client = new EdgarClient({
+      userAgent: UA,
+      sleep: async () => {},
+      fetchImpl: (async () =>
+        new Response("<Error><Code>NoSuchKey</Code></Error>", { status: 404 })) as typeof fetch,
+    });
+    assert.equal(await client.fetchCompanyFacts("0000884394"), null);
+  });
+
+  it("still fails on a 403, which means the contact was refused, not that facts are absent", async () => {
+    const client = new EdgarClient({
+      userAgent: UA,
+      sleep: async () => {},
+      fetchImpl: (async () => new Response("undeclared automated tool", { status: 403 })) as typeof fetch,
+    });
+    await assert.rejects(() => client.fetchCompanyFacts("1"), /EDGAR request failed: 403/);
+  });
 });

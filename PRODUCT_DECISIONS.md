@@ -680,3 +680,48 @@ honest and recomputable.
 **Revisit when** the live path needs sub-15-minute consolidated quotes — that is
 what Alpaca's paid tier actually sells, and it is a Phase 5 execution question,
 not a research-data one.
+
+---
+
+## D-033 — A filer with no XBRL facts is absent, not failed
+**Date:** 2026-08-11 · **Inferred**
+
+`fetchCompanyFacts` returns `null` on a 404 instead of throwing, and the CLI
+skips that symbol and counts it. Every other status still throws.
+
+**Reasoning.** An ETF has a CIK and appears in EDGAR's ticker file, but files no
+company facts, so `companyfacts` 404s. Treating that as an error aborts the run
+at whichever ETF sorts first and loses every filer after it — which is what a
+real universe run did, stopping at SPY and taking eight companies with it. A
+universe legitimately contains ETFs, so their absence is a normal outcome.
+
+**Why not blanket-catch.** A 403 is the missing-contact refusal and a 429 is the
+rate limit. Both must stop the run: read as "this company has no financials",
+they would write an empty history for a company that has one.
+
+---
+
+## D-034 — A truncated filing history is reported, never repaired by guess
+**Date:** 2026-08-11 · **Inferred**
+
+When a filer's facts span under two years, ingestion prints a warning naming the
+CIK and pointing at EDGAR company search. It does not attempt to find the
+predecessor.
+
+**Reasoning.** EDGAR's ticker file resolves a ticker to whichever entity
+currently files under it, and a reorganization makes that a new CIK with a new
+history. Measured: `XOM` resolves to *ExxonMobil Holdings Corp* (CIK
+0002115436), whose entire history is 63 facts filed on a single day, while
+*Exxon Mobil Corporation* (CIK 0000034088) holds 20,629 fact rows. Nothing
+downstream can detect this — the facts are real, consistent, and pass every
+validator; there are just almost none, and a quality screen reads that as a
+company with no track record rather than a resolution error. D-030 then persists
+the mapping.
+
+**Why not resolve it automatically.** Successor linkage is not in
+`companyfacts`, so any automatic repair would be a guess written into a
+permanent identifier. A wrong CIK silently attached to a real company is worse
+than a warning the operator answers once.
+
+**Consequence.** Reorganized tickers need their CIK corrected by hand before
+their fundamentals mean anything. `XOM` is currently one of them.

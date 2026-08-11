@@ -106,6 +106,51 @@ async function runActions(
  * never be resolved from its ticker again, and a survivorship-safe history
  * depends on having written the mapping down while it was still there.
  */
+/**
+ * Warns when a filer's history is too short to be the company's real history.
+ *
+ * EDGAR's ticker file points at whichever entity currently files under the
+ * ticker, and a reorganization makes that a brand-new CIK with a brand-new
+ * filing history. XOM is the live example: the ticker file resolves it to
+ * "ExxonMobil Holdings Corp" (CIK 0002115436, a few hundred fact rows), while
+ * the decades of Exxon Mobil Corporation financials sit on the predecessor CIK
+ * 0000034088 with twenty thousand.
+ *
+ * Nothing downstream can detect this. The facts that arrive are real, internally
+ * consistent, and pass every validator — there are just almost none of them, and
+ * a quality screen reading them sees a company with no track record rather than
+ * a resolution error. Worse, D-030 records the CIK on first sight and keeps it,
+ * so the wrong mapping persists.
+ *
+ * This does not attempt to resolve the predecessor automatically: successor
+ * linkage is not in `companyfacts`, and guessing at it would be a worse failure
+ * than reporting it. It says what it saw and leaves the operator to decide.
+ */
+function warnIfHistoryLooksTruncated(
+  symbol: string,
+  cik: string,
+  facts: readonly { filedAt: string }[],
+): void {
+  if (facts.length === 0) return;
+  let earliest = facts[0]!.filedAt;
+  let latest = facts[0]!.filedAt;
+  for (const fact of facts) {
+    if (fact.filedAt < earliest) earliest = fact.filedAt;
+    if (fact.filedAt > latest) latest = fact.filedAt;
+  }
+
+  const spanDays = (Date.parse(latest) - Date.parse(earliest)) / 86_400_000;
+  if (spanDays >= 730) return;
+
+  process.stdout.write(
+    `      ⚠ ${symbol} (CIK ${cik}) has only ${Math.round(spanDays)} days of filing history ` +
+      `(${earliest} → ${latest}).\n` +
+      `        A ticker that reorganized resolves to the successor entity, whose history starts\n` +
+      `        at the reorganization; the predecessor CIK holds the rest. Verify at\n` +
+      `        https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=${encodeURIComponent(symbol)}\n`,
+  );
+}
+
 async function runFundamentals(
   client: pg.PoolClient,
   symbols: readonly string[],
@@ -128,7 +173,14 @@ async function runFundamentals(
   let tickerMap: Map<string, string> | null = null;
   if (missing.length > 0) tickerMap = await edgar.fetchTickerMap();
 
-  const totals = { requested: 0, inserted: 0, unchanged: 0, restatements: 0, rejected: 0 };
+  const totals = {
+    requested: 0,
+    inserted: 0,
+    unchanged: 0,
+    restatements: 0,
+    rejected: 0,
+    withoutFacts: 0,
+  };
 
   for (const symbol of symbols) {
     const known = alreadyKnown.get(symbol);
@@ -153,6 +205,13 @@ async function runFundamentals(
     }
 
     const document = await edgar.fetchCompanyFacts(cik);
+    if (document === null) {
+      // An ETF or trust: a real filer with a real CIK and no XBRL facts. Not a
+      // failure, and not something to retry.
+      process.stdout.write(`  ${symbol} (CIK ${cik}): no XBRL facts at EDGAR — skipped\n`);
+      totals.withoutFacts += 1;
+      continue;
+    }
     const facts = extractFacts(document, symbol, { concepts: INGESTED_CONCEPTS, since });
     const report = await ingestFundamentals(client, "sec_edgar", facts);
 
@@ -166,6 +225,7 @@ async function runFundamentals(
       `  ${symbol} (CIK ${cik}): ${report.inserted} new, ${report.restatements} restated, ` +
         `${report.unchanged} unchanged, ${report.rejected.length} rejected\n`,
     );
+    warnIfHistoryLooksTruncated(symbol, cik, facts);
     // A rejected fact is not cosmetic: 'filed before the period it reports had
     // ended' is look-ahead with a timestamp on it, and it must be visible.
     for (const { fact, problems } of report.rejected.slice(0, 5)) {
@@ -181,7 +241,8 @@ async function runFundamentals(
       `  inserted     ${totals.inserted}\n` +
       `  restatements ${totals.restatements}\n` +
       `  unchanged    ${totals.unchanged}\n` +
-      `  rejected     ${totals.rejected}\n`,
+      `  rejected     ${totals.rejected}\n` +
+      `  no facts     ${totals.withoutFacts} (ETFs and trusts file none)\n`,
   );
 }
 

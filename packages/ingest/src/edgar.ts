@@ -197,16 +197,37 @@ export class EdgarClient {
     return map;
   }
 
-  /** Every XBRL fact EDGAR holds for one filer. */
-  async fetchCompanyFacts(cik: string): Promise<EdgarCompanyFacts> {
+  /**
+   * Every XBRL fact EDGAR holds for one filer, or `null` if it holds none.
+   *
+   * A 404 here is not an error and must not be raised as one. An ETF has a CIK
+   * and appears in the ticker file, but files no XBRL company facts — SPY is the
+   * obvious case, and any index or commodity trust behaves the same way. Since a
+   * universe legitimately contains ETFs, treating their absence as a failure
+   * aborts the run at whichever ETF happens to sort first and silently costs
+   * every filer after it.
+   *
+   * So absence is reported as absence, and the caller decides. Every other
+   * status still throws: a 403 is the missing-contact refusal and a 429 is the
+   * rate limit, and both need to stop the run rather than be read as "this
+   * company has no financials".
+   */
+  async fetchCompanyFacts(cik: string): Promise<EdgarCompanyFacts | null> {
     const padded = cik.replace(/\D/g, "").padStart(10, "0");
     const response = await this.#request(
       `${this.#baseUrl}/api/xbrl/companyfacts/CIK${padded}.json`,
+      { allowNotFound: true },
     );
+    if (response === null) return null;
     return (await response.json()) as EdgarCompanyFacts;
   }
 
-  async #request(url: string): Promise<Response> {
+  async #request(url: string, options?: { allowNotFound?: false }): Promise<Response>;
+  async #request(url: string, options: { allowNotFound: true }): Promise<Response | null>;
+  async #request(
+    url: string,
+    options: { allowNotFound?: boolean } = {},
+  ): Promise<Response | null> {
     // Spaced rather than bursted. The SEC publishes a rate limit and enforces it
     // with IP blocks that persist well beyond the request that earned them.
     const wait = this.#minIntervalMs - (Date.now() - this.#lastRequestAt);
@@ -220,6 +241,7 @@ export class EdgarClient {
         "accept-encoding": "gzip, deflate",
       },
     });
+    if (response.status === 404 && options.allowNotFound) return null;
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       throw new Error(`EDGAR request failed: ${response.status} ${url} ${body.slice(0, 200)}`);
