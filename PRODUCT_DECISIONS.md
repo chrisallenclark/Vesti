@@ -47,6 +47,11 @@ strategy proves it needs microstructure).
 features are biased, so volume-confirmation setups cannot be honestly validated
 until a full-tape upgrade. Recorded per-row via `bar_features.tape`.
 
+> **The reasoning above is partly false — see D-021.** Measured against the live
+> API, the free tier's daily history begins 2020-07-27, not ten years back, and
+> SIP is refused outright. The decision is left standing rather than edited,
+> because it was explicitly chosen; D-021 records the correction and the options.
+
 ---
 
 ## D-003 — Assets: US equities and ETFs only for v1
@@ -161,7 +166,8 @@ Separate databases per component (loses referential integrity and cross-domain
 queries).
 
 **Consequence.** `SECURITY DEFINER` functions must pin `search_path` — done on
-all six PIT functions — or they become a privilege-escalation vector.
+all seven PIT functions, including `pit_fundamental_facts` — or they become a
+privilege-escalation vector.
 
 ---
 
@@ -402,3 +408,223 @@ square-root form is the standard empirical result and is physically motivated.
 
 **Consequence.** A strategy that only works at sizes the tape cannot absorb
 reveals itself in the backtest instead of in production.
+
+---
+
+## D-021 — Correction to D-002: the free tier does not have 10 years of history
+**Date:** 2026-08-11 · **Inferred** (measured, and it contradicts an explicit decision)
+
+D-002 was chosen partly on the grounds that "Alpaca's free tier includes 10 years
+of 1-minute bars — genuinely enough history for pattern sample sizes." **That
+premise is false.** Measured against the live API: the IEX daily archive begins
+**2020-07-27**, and the SIP feed returns `subscription does not permit querying
+recent SIP data` on this tier.
+
+So the free tier supplies roughly **six years** of daily history, not ten, and
+none of it predates COVID.
+
+**Why this is being raised rather than absorbed.** D-002 is an *explicitly
+chosen* decision and the reasoning under it is now known to be wrong. The
+decision may still be correct — starting lean and upgrading on evidence does not
+depend on the exact history depth — but it should be re-affirmed knowingly
+rather than left resting on a number that does not hold.
+
+**What it costs.** Every backtest sample begins mid-2020. There is no 2008, no
+2018Q4, no February 2020 in any of it, so a strategy cannot be stratified across
+a real bear regime and "survived a drawdown" cannot be tested at all. Combined
+with the existing IEX volume caveat, the honest reading is that the current data
+supports *structure and volatility* research and cannot support regime or
+volume-dependent claims.
+
+**Options, for the operator.** Accept it and defer (free, and Phase 4 must then
+report regime coverage as a known gap). Upgrade to Polygon at ~$79–199/mo, which
+D-002 already priced. Backfill deeper daily history from a cheaper one-off
+source purely for regime work.
+
+---
+
+## D-022 — Corporate-action announcements use the earliest defensible vendor date
+**Date:** 2026-08-11 · **Inferred** (discovered against real data)
+
+`announced_at` for a split is the minimum of the record, payable, process and ex
+dates the vendor supplies, rather than `process_date` alone.
+
+**Reasoning.** Alpaca publishes no declaration date, and its `process_date`
+turned out to equal the ex-date on *every* split observed. Taken at face value
+that told the PIT layer Apple's 4:1 became knowable on the morning it took
+effect — a month after the market was told — so every backtest inside the
+announcement window read a price series no trader ever saw. Every other date the
+vendor does give is bounded below by the declaration (a board declares first,
+then record, payable and ex dates are set off it), so the minimum is the
+tightest bound that cannot precede the announcement.
+
+Taking a minimum also guarantees `announced_at <= ex_date`, so a vendor row with
+a late `process_date` cannot trip the validator and vanish from the adjustment. A
+silently missing split leaves an unexplained 75% overnight collapse in the series.
+
+**Still late, never early.** Apple's split was really declared 2020-07-30 and
+this dates it 2020-08-24. The error can only withhold an adjustment a backtest
+was entitled to.
+
+**Revisit if** a vendor with declaration dates is adopted.
+
+---
+
+## D-023 — Fills are posted from cumulative broker state, not discrete executions
+**Date:** 2026-08-11 · **Inferred**
+
+Both fill sources — the `trade_updates` stream and the polling reconciler — call
+`postCumulativeFill`, which computes the increment against `filled_quantity`
+*while holding the order row lock*. The deduplication key is the cumulative
+quantity, not the venue's execution id.
+
+**Reasoning.** A stream event and a poll describe the same economic fill. Keyed
+separately — the venue's execution id on one side, a synthesized id on the other
+— they do not collide, and a 40-share partial reported by both enters the ledger
+as 80. The overfill check does not save you, because 80 is still under a
+100-share order. Cumulative quantity is strictly increasing within an order, so
+it names the increment uniquely whoever reports it, and computing the delta under
+the lock makes the second reporter find nothing to do.
+
+**Consequence.** It also heals gaps: a fill missed entirely while the process was
+down appears as one increment at the blended price of exactly those shares, which
+is the correct number rather than an approximation. The venue's execution id is
+recorded in the audit trail but is deliberately not the key.
+
+**Alternatives.** Stream only (loses everything that happens while disconnected —
+and on the first live order the stream delivered nothing at all). Poll only
+(coarser and slower to see a fill). One source with the other disabled (whichever
+is chosen is a single point of failure for a position nobody is accounting for).
+
+---
+
+## D-024 — Deduplication runs before the order-state and quantity checks
+**Date:** 2026-08-11 · **Inferred** (found by a failing test)
+
+**Reasoning.** The commonest replay is the *final* fill of an order: the broker
+sends it, we post it, the order goes to `filled`, and the same fill arrives again
+down a reconnecting socket. Checking state first rejects that as "this order is
+filled and cannot take a fill" and checking quantity first calls it an overfill —
+both errors, for an event that needs no action. Only after establishing that a
+fill is genuinely new is it meaningful to ask whether the order can accept it.
+
+---
+
+## D-025 — Capital is asserted by a human, never inferred from the broker
+**Date:** 2026-08-11 · **Inferred**
+
+`--deposit` records an external contribution and splits it across mandates by
+target weight, double-entry. There is deliberately no "read the broker's cash and
+make ours match".
+
+**Reasoning.** An unrecorded fill and a genuine deposit both look like "our
+number is too low". A command that silently corrects the total would erase
+exactly the evidence that distinguishes them — which is the drift reconciliation
+exists to catch. Asserting the deposit once gives reconciliation something real
+to check against.
+
+**How it surfaced.** The equity curve read zeros. The ledger recorded only flows
+we caused, so an account funded with $100,000 at the broker showed three mandates
+worth nothing, and the measurement Phase 6 exists to produce was structurally
+unable to be right.
+
+---
+
+## D-026 — A strategy trades only at `paper_approved`, and the trading role cannot promote
+**Date:** 2026-08-11 · **Inferred**
+
+Strategy rules live in code; standing lives in `strategy_versions`. The loop
+considers a strategy only at `paper_approved` or above. Promotion moves one rung
+at a time, requires a rationale, and cannot reach live at all by this route.
+`vesti_execution` has no write access to `strategies`, so the registry connects
+as `vesti_research`.
+
+**Reasoning.** Rules must be reviewable and versioned; whether something is
+allowed to trade is an operational state that has to change at 3pm without a
+deploy. And an execution service able to authorise its own strategies would make
+the ladder decorative — the same argument as D-008, applied to promotion rather
+than to orders.
+
+**Consequence.** With nothing promoted the loop runs, marks equity and opens
+nothing. That is the correct behaviour for a system whose Strategy Lab does not
+exist yet, not a failure to act.
+
+---
+
+## D-027 — Resetting the kill switch requires quoting back the reason
+**Date:** 2026-08-11 · **Inferred**
+
+Tripping is one statement and takes effect on the next order. Resetting must pass
+the exact reason the switch was tripped for. A second trip does not overwrite the
+first reason.
+
+**Reasoning.** The way a kill switch fails is not failing to stop — it is being
+cleared by whoever is most inconvenienced by it, before anybody has established
+what happened. Quoting the reason back is the cheapest possible evidence that
+somebody read it. Keeping the first reason stops an automatic re-trip burying the
+human note that says what actually went wrong.
+
+---
+
+## D-028 — Self-crossing mandates are detected, not netted
+**Date:** 2026-08-11 · **Inferred, and deliberately incomplete**
+
+Active selling a ticker while Long-Term buys it is coherent under D-009 and is a
+wash trade at a single omnibus broker account. `selfcross.ts` refuses before
+submission rather than letting the venue reject it cryptically.
+
+**Reasoning for stopping there.** The real answer is to net internally — cross
+the shares between mandates at the prevailing price and send only the residual —
+and that changes what a fill *means*, because an internal cross has no broker
+fill to reconcile against. That is a design decision about the reconciliation
+invariant, not a detail, and it belongs with the Phase 6 execution loop rather
+than smuggled in beside it.
+
+**Open item.** Until netted, two mandates cannot act on the same name in opposite
+directions on the same session. The second one is refused.
+
+---
+
+## D-029 — XBRL facts store raw tags; concept aliasing resolves at read time
+**Date:** 2026-08-11 · **Inferred**
+
+`fundamental_facts` stores the filer's own us-gaap concept. The mapping from
+`revenue` to `RevenueFromContractWithCustomerExcludingAssessedTax` /
+`Revenues` / `SalesRevenueNet` lives in code, preference-ordered, applied on read.
+
+**Reasoning.** Exactly D-006's argument in a different domain. Filers change tags
+between years and some emit several at once; canonicalising at write time bakes
+one interpretation into permanent storage, and revising it would mean
+re-ingesting a decade of filings. Storing raw keeps the revision cheap.
+
+**Related.** `observed_at` is 22:00 UTC on the filing date, matching D-015 —
+filings are accepted through the afternoon, so midnight would claim the market
+knew a 10-K before it opened that morning.
+
+---
+
+## D-030 — The CIK is recorded on first sight, because EDGAR's ticker file is survivorship-biased
+**Date:** 2026-08-11 · **Inferred**
+
+**Reasoning.** `company_tickers.json` lists only currently-listed companies. Once
+a name delists it drops out and its ticker can never be resolved to a filer
+again — so a survivorship-safe fundamental history depends on having written the
+mapping down while the company was still there. Same failure mode D-006 and
+`pit_universe` guard against, arriving through a different door.
+
+---
+
+## D-031 — `SimBroker` refuses time-in-force values it cannot model honestly
+**Date:** 2026-08-11 · **Inferred**
+
+`TimeInForce` widened to the six the database and real venues accept. The
+simulator models `day` and `gtc` and rejects `ioc`, `fok`, `opg` and `cls`.
+
+**Reasoning.** The simulator matches once per session against a daily bar and has
+no way to express "fill this instant or cancel". Treating an unrecognised value
+as GTC would let an immediate-or-cancel order rest for weeks in a backtest —
+which is not a small inaccuracy but a different, better-looking strategy than the
+one written. Consistent with D-019: when the model cannot be honest, it refuses
+rather than approximates.
+
+**Revisit when** intraday bars are available to the simulator.
