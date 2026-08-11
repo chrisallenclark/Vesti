@@ -29,3 +29,21 @@ export {
   type ExternalPosition,
   type ReconciliationReport,
 } from "./reconcile.ts";
+
+export {
+  AlpacaBroker,
+  ALPACA_LIVE_URL,
+  ALPACA_PAPER_URL,
+  toOrderState,
+  type AlpacaBrokerOptions,
+  type AlpacaOrder,
+} from "./alpaca.ts";
+
+export { pollFills, streamFills, type FillSourceOptions } from "./fills.ts";
+
+export {
+  SelfCrossError,
+  assertNoSelfCross,
+  findSelfCrosses,
+  type SelfCross,
+} from "./selfcross.ts";

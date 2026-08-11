@@ -439,6 +439,15 @@ function validateRequest(request: BrokerOrderRequest): string[] {
   if (!Number.isInteger(request.quantity) || request.quantity <= 0) {
     problems.push(`Quantity must be a positive whole number, got ${request.quantity}.`);
   }
+  // Refused rather than approximated. The simulator matches once per session
+  // against a daily bar, which has no way to express "fill this instant or
+  // cancel" or "fill at the open only" — and quietly resting an IOC order until
+  // it eventually fills would report a strategy nobody wrote.
+  if (request.timeInForce !== "day" && request.timeInForce !== "gtc") {
+    problems.push(
+      `SimBroker models 'day' and 'gtc' only; '${request.timeInForce}' needs intrabar data to simulate honestly.`,
+    );
+  }
   if ((request.kind === "limit" || request.kind === "stop_limit") && !(request.limitPrice! > 0)) {
     problems.push(`A ${request.kind} order needs a positive limit price.`);
   }

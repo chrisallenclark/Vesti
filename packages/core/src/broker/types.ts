@@ -24,7 +24,17 @@ export type { Side } from "../risk/types.ts";
 import type { Side } from "../risk/types.ts";
 
 export type OrderKind = "market" | "limit" | "stop" | "stop_limit";
-export type TimeInForce = "day" | "gtc";
+
+/**
+ * Matches the `time_in_force` enum in the database, which in turn matches what
+ * a real venue accepts.
+ *
+ * `SimBroker` models `day` and `gtc` and refuses the rest rather than treating
+ * an unrecognised one as GTC. An immediate-or-cancel order that silently rests
+ * for weeks in a backtest is not a small inaccuracy — it is a different
+ * strategy, and one that looks better than the one actually written.
+ */
+export type TimeInForce = "day" | "gtc" | "ioc" | "fok" | "opg" | "cls";
 
 export type BrokerOrderStatus =
   | "accepted"

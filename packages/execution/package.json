@@ -9,7 +9,8 @@
     "./*": "./src/*"
   },
   "scripts": {
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --test src/*.test.ts",
+    "paper": "tsx src/paper.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

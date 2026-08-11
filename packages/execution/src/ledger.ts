@@ -88,12 +88,20 @@ export interface RiskRulingResult {
 }
 
 export interface IncomingFill {
-  /** The broker's own identifier. Required: it is the deduplication key. */
+  /** The deduplication key. Required — a fill with no identity cannot be replayed safely. */
   brokerFillId: string;
   quantity: number;
   price: number;
   fees?: number;
   filledAt: Date;
+  /**
+   * The venue's own execution id, when the source has one.
+   *
+   * Recorded in the audit trail but deliberately NOT the deduplication key: the
+   * poller has no access to it, so keying on it would let the stream and the
+   * poller post the same shares twice. See `postCumulativeFill`.
+   */
+  executionId?: string;
 }
 
 /** The plan for the lot a buy opens, captured at entry rather than derived later. */
@@ -297,123 +305,74 @@ export class OrderLedger {
   ): Promise<PostedFill> {
     return this.transaction(async (client) => {
       const order = await lockOrder(client, orderId);
-      const fees = fill.fees ?? 0;
+      return applyFill(client, order, fill, options);
+    });
+  }
 
-      if (fill.quantity <= 0) {
-        throw new OrderLifecycleError("A fill must have positive quantity.", "non_positive_fill");
+  /**
+   * Posts from a broker's CUMULATIVE view of an order rather than a discrete
+   * execution, and works out the increment itself.
+   *
+   * This is what both real fill sources use, and using one path for both is a
+   * correctness requirement rather than tidiness. A `trade_updates` event and a
+   * poll of the same order describe the same economic fill; if each posted
+   * under its own identifier — the venue's execution id and a synthesized one —
+   * they would not collide, and a 40-share partial reported by both would enter
+   * the ledger as 80 shares. The overfill check does not save you, because 80
+   * is still under a 100-share order.
+   *
+   * Two properties make this safe. The delta is computed against
+   * `filled_quantity` while the order row is LOCKED, so a concurrent post from
+   * the other source is serialised behind it and simply sees nothing left to
+   * do. And the identifier is the cumulative quantity itself, which is strictly
+   * increasing within an order and therefore names the increment uniquely
+   * whoever reports it.
+   *
+   * It also heals gaps. If a fill was missed entirely — the process was down,
+   * the socket was gone — the next cumulative report shows a delta covering
+   * every share since, priced at the blended average of exactly those shares.
+   * That is the correct number, not an approximation of it.
+   */
+  async postCumulativeFill(
+    orderId: string,
+    snapshot: {
+      cumulativeQuantity: number;
+      cumulativeAveragePrice: number;
+      filledAt: Date;
+      fees?: number;
+      /** The venue's own execution id, when there is one. Recorded, not keyed on. */
+      executionId?: string;
+    },
+    options: PostFillOptions = {},
+  ): Promise<PostedFill> {
+    return this.transaction(async (client) => {
+      const order = await lockOrder(client, orderId);
+      const delta = snapshot.cumulativeQuantity - order.filledQuantity;
+      if (delta <= 1e-9) {
+        return notApplied(order);
       }
 
-      // Deduplication comes BEFORE the state and overfill checks, and the
-      // ordering is the whole point rather than an optimisation.
-      //
-      // The commonest replay is the final fill of an order: the broker sends
-      // it, we post it, the order goes to `filled`, and then the same fill
-      // arrives again down a reconnecting socket. Checking state first would
-      // reject that as "this order is filled and cannot take a fill", and
-      // checking quantity first would reject it as an overfill — both of them
-      // errors, for an event that is not one and needs no action. Only after
-      // establishing that the fill is genuinely new is it meaningful to ask
-      // whether the order can accept it.
-      const inserted = await client.query<{ id: string }>(
-        `INSERT INTO fills (order_id, filled_at, quantity, price, fees, broker_fill_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (order_id, broker_fill_id) WHERE broker_fill_id IS NOT NULL
-         DO NOTHING
-         RETURNING id`,
-        [orderId, fill.filledAt, fill.quantity, fill.price, fees, fill.brokerFillId],
+      const { rows } = await client.query<{ notional: string | null }>(
+        `SELECT sum(quantity * price) AS notional FROM fills WHERE order_id = $1`,
+        [orderId],
       );
-      if (inserted.rowCount === 0) {
-        return {
-          applied: false,
-          fillId: null,
-          orderStatus: order.status,
-          filledQuantity: order.filledQuantity,
-          lotOpened: null,
-          allocations: [],
-          cashDelta: 0,
-          realizedPnl: 0,
-        };
-      }
-      const fillId = inserted.rows[0]!.id;
+      const priorNotional = Number(rows[0]?.notional ?? 0);
+      const price =
+        (snapshot.cumulativeQuantity * snapshot.cumulativeAveragePrice - priorNotional) / delta;
 
-      if (!TRADEABLE_STATUSES.has(order.status)) {
-        throw new OrderLifecycleError(
-          `Order ${orderId} is ${order.status} and cannot take a fill.`,
-          "order_not_fillable",
-        );
-      }
-      if (order.filledQuantity + fill.quantity > order.quantity + 1e-9) {
-        throw new OrderLifecycleError(
-          `Fill of ${fill.quantity} would take order ${orderId} to ` +
-            `${order.filledQuantity + fill.quantity} against a quantity of ${order.quantity}.`,
-          "overfill",
-        );
-      }
-
-      const gross = fill.price * fill.quantity;
-      let lotOpened: string | null = null;
-      let allocations: LotAllocation[] = [];
-      let realizedPnl = 0;
-
-      if (order.side === "buy") {
-        lotOpened = await openLot(client, order, fill, fees, options.lotPlan);
-      } else {
-        allocations = await closeLots(client, order, fill, fees, options.method ?? "fifo");
-        realizedPnl = allocations.reduce((sum, a) => sum + a.realizedPnl, 0);
-      }
-
-      // Signed so the balance is a plain sum. Fees are their own entry rather
-      // than folded into the trade amount: "what has trading cost me" should be
-      // one query, not an inference from the difference between two numbers.
-      const cashDelta = (order.side === "buy" ? -gross : gross) - fees;
-      await client.query(
-        `INSERT INTO cash_ledger (account_id, mandate_id, occurred_at, kind, amount, reference)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [
-          order.accountId,
-          order.mandateId,
-          fill.filledAt,
-          order.side,
-          order.side === "buy" ? -gross : gross,
-          `fill:${fillId}`,
-        ],
+      return applyFill(
+        client,
+        order,
+        {
+          brokerFillId: `cum:${snapshot.cumulativeQuantity}`,
+          quantity: delta,
+          price,
+          fees: snapshot.fees ?? 0,
+          filledAt: snapshot.filledAt,
+          ...(snapshot.executionId ? { executionId: snapshot.executionId } : {}),
+        },
+        options,
       );
-      if (fees !== 0) {
-        await client.query(
-          `INSERT INTO cash_ledger (account_id, mandate_id, occurred_at, kind, amount, reference)
-           VALUES ($1, $2, $3, 'fee', $4, $5)`,
-          [order.accountId, order.mandateId, fill.filledAt, -fees, `fill:${fillId}`],
-        );
-      }
-
-      const filledQuantity = order.filledQuantity + fill.quantity;
-      const status: OrderStatus =
-        filledQuantity + 1e-9 >= order.quantity ? "filled" : "partially_filled";
-      await client.query(
-        `UPDATE orders SET filled_quantity = $2, status = $3 WHERE id = $1`,
-        [orderId, filledQuantity, status],
-      );
-
-      await audit(client, "order.filled", "order", orderId, {
-        fill_id: fillId,
-        quantity: fill.quantity,
-        price: fill.price,
-        mandate_id: order.mandateId,
-        lot_opened: lotOpened,
-        lots_closed: allocations.map((a) => a.lotId),
-        realized_pnl: realizedPnl,
-      });
-
-      return {
-        applied: true,
-        fillId,
-        orderStatus: status,
-        filledQuantity,
-        lotOpened,
-        allocations,
-        cashDelta,
-        realizedPnl,
-      };
     });
   }
 
@@ -505,6 +464,143 @@ interface LockedOrder {
   filledQuantity: number;
   status: OrderStatus;
   strategyVersionId: string | null;
+}
+
+/** The shape returned when a fill was already posted and nothing changed. */
+function notApplied(order: LockedOrder): PostedFill {
+  return {
+    applied: false,
+    fillId: null,
+    orderStatus: order.status,
+    filledQuantity: order.filledQuantity,
+    lotOpened: null,
+    allocations: [],
+    cashDelta: 0,
+    realizedPnl: 0,
+  };
+}
+
+/**
+ * Everything a fill does, with the order already locked by the caller.
+ *
+ * Shared by the discrete and cumulative entry points so there is exactly one
+ * implementation of what a fill means. Two would drift, and the half that
+ * drifted would be the one a live broker uses.
+ */
+async function applyFill(
+  client: pg.PoolClient,
+  order: LockedOrder,
+  fill: IncomingFill,
+  options: PostFillOptions,
+): Promise<PostedFill> {
+    const fees = fill.fees ?? 0;
+
+    if (fill.quantity <= 0) {
+      throw new OrderLifecycleError("A fill must have positive quantity.", "non_positive_fill");
+    }
+
+    // Deduplication comes BEFORE the state and overfill checks, and the
+    // ordering is the whole point rather than an optimisation.
+    //
+    // The commonest replay is the final fill of an order: the broker sends
+    // it, we post it, the order goes to `filled`, and then the same fill
+    // arrives again down a reconnecting socket. Checking state first would
+    // reject that as "this order is filled and cannot take a fill", and
+    // checking quantity first would reject it as an overfill — both of them
+    // errors, for an event that is not one and needs no action. Only after
+    // establishing that the fill is genuinely new is it meaningful to ask
+    // whether the order can accept it.
+    const inserted = await client.query<{ id: string }>(
+      `INSERT INTO fills (order_id, filled_at, quantity, price, fees, broker_fill_id)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (order_id, broker_fill_id) WHERE broker_fill_id IS NOT NULL
+       DO NOTHING
+       RETURNING id`,
+      [order.id, fill.filledAt, fill.quantity, fill.price, fees, fill.brokerFillId],
+    );
+    if (inserted.rowCount === 0) return notApplied(order);
+    const fillId = inserted.rows[0]!.id;
+
+    if (!TRADEABLE_STATUSES.has(order.status)) {
+      throw new OrderLifecycleError(
+        `Order ${order.id} is ${order.status} and cannot take a fill.`,
+        "order_not_fillable",
+      );
+    }
+    if (order.filledQuantity + fill.quantity > order.quantity + 1e-9) {
+      throw new OrderLifecycleError(
+        `Fill of ${fill.quantity} would take order ${order.id} to ` +
+          `${order.filledQuantity + fill.quantity} against a quantity of ${order.quantity}.`,
+        "overfill",
+      );
+    }
+
+    const gross = fill.price * fill.quantity;
+    let lotOpened: string | null = null;
+    let allocations: LotAllocation[] = [];
+    let realizedPnl = 0;
+
+    if (order.side === "buy") {
+      lotOpened = await openLot(client, order, fill, fees, options.lotPlan);
+    } else {
+      allocations = await closeLots(client, order, fill, fees, options.method ?? "fifo");
+      realizedPnl = allocations.reduce((sum, a) => sum + a.realizedPnl, 0);
+    }
+
+    // Signed so the balance is a plain sum. Fees are their own entry rather
+    // than folded into the trade amount: "what has trading cost me" should be
+    // one query, not an inference from the difference between two numbers.
+    const cashDelta = (order.side === "buy" ? -gross : gross) - fees;
+    await client.query(
+      `INSERT INTO cash_ledger (account_id, mandate_id, occurred_at, kind, amount, reference)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        order.accountId,
+        order.mandateId,
+        fill.filledAt,
+        order.side,
+        order.side === "buy" ? -gross : gross,
+        `fill:${fillId}`,
+      ],
+    );
+    if (fees !== 0) {
+      await client.query(
+        `INSERT INTO cash_ledger (account_id, mandate_id, occurred_at, kind, amount, reference)
+         VALUES ($1, $2, $3, 'fee', $4, $5)`,
+        [order.accountId, order.mandateId, fill.filledAt, -fees, `fill:${fillId}`],
+      );
+    }
+
+    const filledQuantity = order.filledQuantity + fill.quantity;
+    const status: OrderStatus =
+      filledQuantity + 1e-9 >= order.quantity ? "filled" : "partially_filled";
+    await client.query(
+      `UPDATE orders SET filled_quantity = $2, status = $3 WHERE id = $1`,
+      [order.id, filledQuantity, status],
+    );
+
+    await audit(client, "order.filled", "order", order.id, {
+      fill_id: fillId,
+      broker_fill_id: fill.brokerFillId,
+      execution_id: fill.executionId ?? null,
+      quantity: fill.quantity,
+      price: fill.price,
+      mandate_id: order.mandateId,
+      lot_opened: lotOpened,
+      lots_closed: allocations.map((a) => a.lotId),
+      realized_pnl: realizedPnl,
+    });
+
+    return {
+      applied: true,
+      fillId,
+      orderStatus: status,
+      filledQuantity,
+      lotOpened,
+      allocations,
+      cashDelta,
+      realizedPnl,
+    };
 }
 
 /**

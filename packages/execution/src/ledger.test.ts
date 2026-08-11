@@ -28,6 +28,7 @@ import { SimBroker } from "@vesti/core/broker/sim.ts";
 import { OrderLedger, OrderLifecycleError } from "./ledger.ts";
 import { InsufficientLotsError } from "./lots.ts";
 import { reconcile } from "./reconcile.ts";
+import { SelfCrossError, assertNoSelfCross, findSelfCrosses } from "./selfcross.ts";
 
 const execFileAsync = promisify(execFile);
 const DB_PACKAGE = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "db");
@@ -451,6 +452,130 @@ describe("fill posting", () => {
     assert.equal(await ledger.cashBalance(accountId, activeMandateId), -100);
     assert.equal(await ledger.cashBalance(accountId, longTermMandateId), -200);
     assert.equal(await ledger.cashBalance(accountId), -300);
+  });
+});
+
+describe("cumulative fill posting", () => {
+  it("posts a partial once when the stream and the poller both report it", async () => {
+    // The regression this design exists for. A `trade_updates` event and a poll
+    // of the same order describe the SAME 40 shares. Under two identifiers —
+    // the venue's execution id and a synthesized one — they would not collide,
+    // and the ledger would book 80 against a 100-share order without ever
+    // tripping the overfill check.
+    const orderId = await workingOrder({ mandateId: activeMandateId, side: "buy", quantity: 100 });
+
+    const fromStream = await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 40,
+      cumulativeAveragePrice: 10,
+      filledAt: new Date("2026-01-05T15:00:00Z"),
+      executionId: "venue-execution-abc",
+    });
+    const fromPoller = await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 40,
+      cumulativeAveragePrice: 10,
+      filledAt: new Date("2026-01-05T15:00:05Z"),
+    });
+
+    assert.equal(fromStream.applied, true);
+    assert.equal(fromPoller.applied, false, "the second report of the same shares must not land");
+    assert.equal(fromPoller.filledQuantity, 40);
+
+    const { rows } = await admin.query<{ lots: string; filled: string }>(
+      `SELECT (SELECT count(*) FROM lots WHERE account_id = $1)  AS lots,
+              (SELECT filled_quantity FROM orders WHERE id = $2) AS filled`,
+      [accountId, orderId],
+    );
+    assert.equal(Number(rows[0]!.lots), 1);
+    assert.equal(Number(rows[0]!.filled), 40);
+  });
+
+  it("posts only the increment when the cumulative figure advances", async () => {
+    const orderId = await workingOrder({ mandateId: activeMandateId, side: "buy", quantity: 100 });
+    await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 40,
+      cumulativeAveragePrice: 10,
+      filledAt: new Date("2026-01-05T15:00:00Z"),
+    });
+    // 40 at $10 then 60 more at $12 blends to $11.20 across 100.
+    const second = await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 100,
+      cumulativeAveragePrice: 11.2,
+      filledAt: new Date("2026-01-05T15:30:00Z"),
+    });
+
+    assert.equal(second.applied, true);
+    assert.equal(second.filledQuantity, 100);
+    assert.equal(second.orderStatus, "filled");
+    // The increment's own price, recovered from the change in notional — not
+    // the blended average, which would misprice both lots.
+    const lot = await lotRow(second.lotOpened!);
+    assert.equal(lot.quantity, 60);
+    assert.equal(lot.costBasis, 12);
+  });
+
+  it("heals a fill it never saw, at the blended price of exactly those shares", async () => {
+    // The process was down, or the socket was gone. The next cumulative report
+    // is the first sight of everything since, and one fill covering the gap at
+    // the average of those shares is the correct answer rather than an
+    // approximation of it.
+    const orderId = await workingOrder({ mandateId: activeMandateId, side: "buy", quantity: 50 });
+    const healed = await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 50,
+      cumulativeAveragePrice: 20.5,
+      filledAt: new Date("2026-01-05T15:00:00Z"),
+    });
+    assert.equal(healed.applied, true);
+    assert.equal(healed.filledQuantity, 50);
+    assert.equal((await lotRow(healed.lotOpened!)).costBasis, 20.5);
+  });
+
+  it("ignores a report that is behind what we already have", async () => {
+    const orderId = await workingOrder({ mandateId: activeMandateId, side: "buy", quantity: 100 });
+    await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 60,
+      cumulativeAveragePrice: 10,
+      filledAt: new Date("2026-01-05T15:30:00Z"),
+    });
+    // A stale poll arriving after a newer stream event. Reversing our state to
+    // match it would unwind a lot that genuinely exists.
+    const stale = await ledger.postCumulativeFill(orderId, {
+      cumulativeQuantity: 40,
+      cumulativeAveragePrice: 10,
+      filledAt: new Date("2026-01-05T15:00:00Z"),
+    });
+    assert.equal(stale.applied, false);
+    assert.equal(stale.filledQuantity, 60);
+  });
+});
+
+describe("self-cross detection", () => {
+  it("refuses to put the account on both sides of the same symbol", async () => {
+    // Legal in our model, a wash trade at the venue. Two mandates with opposite
+    // intentions in one name is the case where mandate isolation meets a single
+    // omnibus account and something has to give.
+    await buyInto({ mandateId: longTermMandateId, quantity: 100, price: 80 });
+    const longTermExit = await workingOrder({
+      mandateId: longTermMandateId,
+      side: "sell",
+      quantity: 100,
+    });
+
+    await assert.rejects(
+      () => assertNoSelfCross(pool, { accountId, securityId, side: "buy", symbol }),
+      (error: unknown) =>
+        error instanceof SelfCrossError &&
+        error.conflicts.length === 1 &&
+        error.conflicts[0]!.orderId === longTermExit,
+    );
+
+    // The same check passes on the side that does not cross.
+    await assertNoSelfCross(pool, { accountId, securityId, side: "sell", symbol });
+  });
+
+  it("does not see orders that are no longer working", async () => {
+    const stale = await workingOrder({ mandateId: activeMandateId, side: "sell", quantity: 10 });
+    await ledger.recordTerminal(stale, "canceled");
+    assert.deepEqual(await findSelfCrosses(pool, { accountId, securityId, side: "buy" }), []);
   });
 });
 

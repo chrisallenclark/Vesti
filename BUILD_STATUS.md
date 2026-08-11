@@ -26,7 +26,13 @@ though the account holds 540 and the broker would sell them.
 years were requested; Alpaca's IEX archive begins 2020-07-27, so ~6 years of
 daily bars for 17 names, with nine real splits among them. The reconstruction is
 checked against the vendor's own split-adjusted series rather than against our
-own generator. **189 tests pass** across five packages.
+own generator.
+
+**A paper trade has been placed through the whole chain.** 1 AAPL bought at
+$305.27 and sold at $305.02 on the Alpaca paper account, via intent → risk
+ruling → execution gate → venue → fill → lot → cash → reconciliation. Realised
+−$0.25; Alpaca's cash moved by exactly −$0.25 and so did the mandate's ledger.
+**212 tests pass** across five packages.
 
 No strategy exists yet, so nothing decides *what* to trade. That is Phase 4 —
 see *Honest limitations* below.
@@ -63,7 +69,7 @@ research later; it is not a prerequisite for measuring whether the approach work
 | **2** Data for all three mandates | Prices + corporate actions + calendars; **EDGAR XBRL fundamentals**; **catalyst calendar** (CT.gov, openFDA, earnings) | 🔨 **prices done** — daily bars and corporate actions ingested from Alpaca and verified against the PIT layer; fundamentals and catalysts remain |
 | **3** Feature engines | Technical features + patterns (Active); fundamental quality/valuation features (Long-Term); catalyst proximity & magnitude features (Catalyst); forward labeling for all three | ⬜ |
 | **4** Strategy Lab | Backtester, walk-forward, Monte Carlo, regime engine, benchmarks, trial ledger, promotion gates — **one strategy family per mandate**, validated identically | ⬜ |
-| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | 🔨 **core + lifecycle complete** — engine, simulator, gate, DB order lifecycle and reconciliation built and tested; the Alpaca *trading* adapter and post-trade review remain |
+| **5** Paper trading | `BrokerAdapter` + `SimBroker` + Alpaca paper, risk engine, order lifecycle, post-trade review, kill switch, reconciliation | 🔨 **trading** — engine, simulator, gate, Alpaca paper adapter, DB order lifecycle and reconciliation all built, tested and exercised on a real round trip; post-trade review and a way to trip the kill switch remain |
 | **6** **Autonomous paper — the goal** | Signal → construction → risk → execution loop running unattended across **all three mandates**; per-mandate equity curves, benchmark comparison, attribution, calibration scoring | ⬜ |
 | **7** Evidence + AI intelligence | Full document pipeline, model router, thesis versioning, conviction scoring, briefs, alerts — *deepens* the mandates rather than enabling them | ⬜ |
 | **8** Discovery & graph | Opportunity discovery, second-order relationships, knowledge graph, "What did I notice?" | ⬜ |
@@ -186,6 +192,35 @@ at all.
 attributed to the mandate that traded. The balance is a fold, so it cannot drift
 from its entries.
 
+## The first paper trade
+
+`npm run paper -w @vesti/execution -- --symbol AAPL --quantity 1 --mandate active`
+
+No test doubles anywhere in that path, which is the only reason running it
+proves anything. The engine sized 5 shares from a $75 risk budget against a
+$292.98 stop; we asked for 1 and got the smaller of the two. Bought $305.27,
+sold $305.02, realised −$0.25. Alpaca's cash went 100,000.00 → 99,999.75 and the
+Active mandate's ledger reads −0.25. The lot opened at a $305.27 basis, closed
+to zero with a timestamp, and the exit named it in `order_lot_allocations`.
+Audit chain intact across all eleven rows.
+
+Three defects surfaced that no test had:
+
+1. **Alpaca's paper endpoint returns 503 intermittently** — on a plain account
+   read that succeeded moments later. The adapter now retries 5xx, 429 and
+   transport errors with backoff, and resolves a duplicate `client_order_id`
+   to the order that already exists, which is what makes retrying a POST safe.
+2. **The trade-updates stream sends JSON inside BINARY frames.** Left at the
+   default `blob`, every message decoded to the literal string `"[object Blob]"`
+   and the stream silently delivered nothing. The first live order filled anyway
+   — the poller caught it — which is precisely the failure a fallback is meant
+   to hide, and precisely why it must not be the only thing that works.
+3. **Portfolio state fed the risk engine cost basis where it expects market
+   value.** The engine derives sellable size from market value over the
+   reference price, so exiting a position whose price had moved came back as
+   0.99 shares and was refused for being under one share. A profitable position
+   could not have been closed at all.
+
 **Reconciliation is the falsifiability check.** Our per-mandate lots and the
 broker's single omnibus number are computed by different code from different
 state; a test runs `SimBroker` across three sessions, posts every fill through
@@ -204,49 +239,63 @@ Worth stating plainly, because the gap between "foundations complete" and
    for any of them to act on. The Strategy Lab is Phase 4, and a legitimate
    outcome of it is *"none of these setups have an edge"* — that is a finding,
    not a failure.
-2. **Nothing submits an order to Alpaca yet.** The paper keys are verified and
-   the account is live ($100k, `ACTIVE`), but only the *data* API is exercised.
-   `BrokerAdapter` has one real implementation, `SimBroker`; the Alpaca paper
-   adapter is the remaining piece of Phase 5. Everything downstream of a fill
-   now exists, so that adapter is the last thing between here and a paper trade.
-3. **History starts 2020-07-27, not 2015.** Measured, not requested: that is
+2. **Nothing decides *when* to trade either.** `paper.ts` is a runner a human
+   invokes with a symbol and a quantity. The autonomous loop — signal,
+   construction, risk, execution, unattended — is Phase 6, and it needs the
+   strategies from Phase 4 before it has anything to run.
+3. **Two mandates cannot trade one symbol in opposite directions.** Legal in our
+   model, a wash trade at a single omnibus account. `selfcross.ts` detects it
+   and refuses before submission, which is better than a cryptic venue
+   rejection, but detection is not a solution. The answer is to net internally —
+   cross the shares between mandates at the prevailing price and send only the
+   residual — and that changes what a fill means, since an internal cross has no
+   broker fill to reconcile against. Deferred to the Phase 6 execution loop
+   deliberately rather than by omission.
+4. **The kill switch has never been tripped.** `guardedBroker` consults it on
+   every order and the table exists, but nothing sets it and no test has watched
+   a live order be refused by it. An untested safety mechanism is a claim.
+5. **Position sizing values holdings at the last daily close**, not a live
+   quote. Fine for a runner invoked by hand between sessions; wrong for an
+   intraday loop, where a stale mark means the risk engine sizes against
+   yesterday's equity.
+6. **History starts 2020-07-27, not 2015.** Measured, not requested: that is
    where Alpaca's IEX archive begins, and the SIP feed returns "subscription
    does not permit" on the free tier. ~6 years is enough for the splits the PIT
    layer is verified against and thin for anything wanting a pre-COVID regime in
    its sample. Any claim about behaviour across regimes is currently a claim
    about 2020 onward.
-4. **Split announcements are late by construction.** Alpaca publishes no
+7. **Split announcements are late by construction.** Alpaca publishes no
    declaration date. The ingest derives the tightest bound the vendor's own
    dates support — the record date, typically 1–4 weeks before the ex-date — but
    Apple's split was really declared 2020-07-30 and we date it 2020-08-24. The
    error is always in the safe direction: it can withhold an adjustment a
    backtest was entitled to, never grant one it was not. A vendor with
    declaration dates would tighten it.
-5. **One known bad bar.** SPY carries a single 2018-11-01 print — 200 shares,
+8. **One known bad bar.** SPY carries a single 2018-11-01 print — 200 shares,
    one trade, zero range — 20 months before the rest of its history. It is
    individually plausible, so the per-bar validator passes it, and only its
    isolation gives it away. It matters because a return computed from row
    adjacency would read a 20-month gap as one session. Phase 3 features must key
    off the trading calendar rather than adjacent rows; recorded here rather than
    discovered as an outlier in a backtest.
-6. **Reconciliation is not scheduled.** The function exists and is tested;
+9. **Reconciliation is not scheduled.** The function exists and is tested;
    nothing calls it on a timer yet. An unreconciled ledger is only as good as
    the last time someone looked.
-7. **The simulator's fill model is a model.** Realistic and deliberately
+10. **The simulator's fill model is a model.** Realistic and deliberately
    pessimistic, but a model: it assumes a single intrabar path from a daily bar,
    no queue position, and no venue-specific behaviour. Its purpose is to stop a
    strategy looking better than it is, not to predict any individual fill.
-8. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
+11. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
    RVOL, and volume-confirmation signals are biased. Price, structure, and
    volatility setups validate fine; anything whose edge depends on volume needs
    a full-tape upgrade (Polygon, ~$79–199/mo) before its backtest means
    anything. Every bar and feature row records its `tape` so that upgrade
    recomputes cleanly.
-9. **RLS policies are permissive when unset.** `vesti_current_user_id()`
+12. **RLS policies are permissive when unset.** `vesti_current_user_id()`
    returning NULL means unrestricted — correct for migrations and the
    single-user deployment, but the connection pool must set
    `vesti.current_user_id` per request before multi-user ships.
-10. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
+13. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
    rows until one is inserted; the router must treat "no budget configured" as
    deny, not allow.
 
@@ -262,7 +311,7 @@ npm install
 npm run db:migrate        # apply migrations
 npm run db:status         # what is applied vs pending
 npm run db:test           # 25 invariant assertions on a fresh database
-npm test                  # everything: 189 assertions across five packages
+npm test                  # everything: 212 assertions across five packages
 ```
 
 Loading real data needs Alpaca keys in `.env`:
@@ -278,6 +327,17 @@ unexplained cliffs in it wherever a split happened.
 Without keys, the suite skips the real-data checks and stays green; with them,
 `packages/ingest/src/real-pit.test.ts` reconstructs six thousand sessions and
 compares each to the vendor's own adjusted print.
+
+Placing a paper trade:
+
+```bash
+npm run paper -w @vesti/execution -- --symbol AAPL --quantity 1 --mandate active
+npm run paper -w @vesti/execution -- --symbol AAPL --quantity 1 --dry-run
+```
+
+`--dry-run` stops after the risk ruling, before anything reaches the venue. The
+runner refuses any base URL that is not `paper-api`, so pointing it at live
+takes a code change rather than an environment variable.
 
 Migrations are immutable once applied — the runner refuses to proceed if a file's
 checksum changes, because silent schema drift between environments is how

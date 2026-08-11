@@ -171,10 +171,14 @@ packages/core/       Domain logic, all pure and all tested:
                        market/   US equity trading calendar
                        sim/      seeded PRNG, synthetic series with ground truth
 packages/ingest/     Market data providers and the bitemporal write path.
-packages/execution/  The order lifecycle against the database:
+packages/execution/  The order lifecycle against the database and the venue:
                        ledger.ts     intent -> ruling -> submission -> fill
                        lots.ts       specific-lot selection, mandate-scoped
+                       alpaca.ts     BrokerAdapter over Alpaca paper/live
+                       fills.ts      trade_updates stream + polling reconciler
+                       selfcross.ts  two mandates, one symbol, opposite sides
                        reconcile.ts  our lots vs the broker's omnibus count
+                       paper.ts      the whole chain, end to end, no doubles
 services/quant/      Python: features, patterns, backtest, Monte Carlo.
 docs/                Long-form design notes.
 ```
@@ -212,6 +216,19 @@ properties it is built around — fills are idempotent, because brokers replay a
 reapplying one manufactures a position that never existed; exits consume only
 their own mandate's lots; and cash is a ledger of signed entries rather than a
 balance, so it can be explained rather than merely reported.
+
+**Fills from a real venue** arrive asynchronously, so `BrokerAdapter` has no
+method that could return them. Two sources run together: the `trade_updates`
+stream, and a poller that re-reads open orders. Both post through one cumulative
+path — the broker reports a running total, and the ledger computes the increment
+itself **while holding the order lock**. That is what makes running both free:
+whichever arrives second finds nothing left to do. Posting each under its own
+identifier instead would book a 40-share partial twice, and the overfill check
+would not catch it, because 80 is still under a 100-share order.
+
+The redundancy is not theoretical. On the first live paper order the stream
+delivered nothing — Alpaca sends JSON inside binary websocket frames — and the
+poller caught the fill.
 
 Reconciliation compares our per-mandate lots and cash to the broker's own count.
 Both sides come from different code over different state, which is what makes
