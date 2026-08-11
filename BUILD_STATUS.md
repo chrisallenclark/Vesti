@@ -140,21 +140,30 @@ Worth stating plainly, because the gap between "foundations complete" and
    so Alpaca ingestion has not been exercised against a live endpoint. That is an
    environment constraint, not a code gap — the provider interface is the only
    thing that changes.
-4. **The simulator's fill model is a model.** Realistic and deliberately
+4. **Day trading is not yet possible end to end.** The Active mandate is meant
+   to day trade, and the schema is ready for it — `bars_intraday` and
+   `pit_bars_intraday` exist — but two pieces are missing. There is no intraday
+   ingestion yet (only daily bars), and the simulator's clock advances one bar
+   per symbol per step with `day` orders expiring at the end of each step. That
+   is correct for daily bars and wrong for minute bars, where a day order should
+   survive until the session closes. The clock generalises naturally once bars
+   carry a session boundary; the expiry rule is the part that has to change.
+
+5. **The simulator's fill model is a model.** Realistic and deliberately
    pessimistic, but a model: it assumes a single intrabar path from a daily bar,
    no queue position, and no venue-specific behaviour. Its purpose is to stop a
    strategy looking better than it is, not to predict any individual fill.
-5. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
+6. **Free-tier data is IEX-only.** ~2–3% of consolidated volume, so volume,
    RVOL, and volume-confirmation signals are biased. Price, structure, and
    volatility setups validate fine; anything whose edge depends on volume needs
    a full-tape upgrade (Polygon, ~$79–199/mo) before its backtest means
    anything. Every bar and feature row records its `tape` so that upgrade
    recomputes cleanly.
-6. **RLS policies are permissive when unset.** `vesti_current_user_id()`
+7. **RLS policies are permissive when unset.** `vesti_current_user_id()`
    returning NULL means unrestricted — correct for migrations and the
    single-user deployment, but the connection pool must set
    `vesti.current_user_id` per request before multi-user ships.
-7. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
+8. **`ai_budgets` has no row by default.** `vesti_ai_budget_check()` returns no
    rows until one is inserted; the router must treat "no budget configured" as
    deny, not allow.
 
