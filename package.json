@@ -18,7 +18,7 @@
     "db:test": "npm run test -w @vesti/db",
     "typecheck": "tsc --noEmit && tsc --noEmit -p apps/web",
     "test": "npm run test --workspaces --if-present && tsx --test scripts/*.test.mts",
-    "db:summary": "tsx scripts/summary.mts"
+    "db:summary": "tsx --env-file-if-exists=.env scripts/summary.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

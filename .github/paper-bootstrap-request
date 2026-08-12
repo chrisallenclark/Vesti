@@ -5,4 +5,4 @@
 # after it is sized against a portfolio that does not exist. Do not edit this
 # to "re-run" anything — the daily session is `.github/paper-request`.
 
-bootstrap: 1 — opening capital $100,000, promote active.trend_pullback to paper_approved
+bootstrap: 2 — retry; the first attempt failed before recording any capital

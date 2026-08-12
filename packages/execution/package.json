@@ -10,8 +10,8 @@
   },
   "scripts": {
     "test": "tsx --test src/*.test.ts",
-    "paper": "tsx src/paper.ts",
-    "session": "tsx src/session.ts"
+    "paper": "tsx --env-file-if-exists=../../.env src/paper.ts",
+    "session": "tsx --env-file-if-exists=../../.env src/session.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",
