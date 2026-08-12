@@ -115,6 +115,22 @@ restart safety is a correctness property, not a nicety:
 - `tradedToday` is counted from **orders**, not fills, so a submitted-but-unfilled
   order still uses its shot
 - the engine holds nothing across cycles that would be wrong if the process died
+- **only one worker may trade an account, and the database decides which.** The
+  heartbeat is a lease: whoever wrote it most recently owns the account, a
+  worker that finds another id beating within three minutes refuses to start,
+  and a stale lease is takeable so a wedged predecessor is recoverable without a
+  human. Do not move this back into a CI concurrency group — that guard
+  disappears the moment a worker is started by hand, and it lets a broken run
+  hold the account for its whole timeout.
+
+## Everything that talks to the network needs a timeout
+
+`fetch` has no default timeout, and a socket that is open but silent never
+rejects. The worker's loop is sequential, so one stalled request stops the whole
+session while the process goes on looking healthy — which is exactly what the
+first live run did, freezing at twelve cycles with the job still green. Every
+outbound request carries a timeout, and the cycle itself has a watchdog. Any new
+call that leaves the process needs the same, or it reintroduces the failure.
 
 ## Do not over-engineer
 
