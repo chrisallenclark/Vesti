@@ -34,21 +34,16 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
-  # Write, because the result is committed to `docs/backtest.json`. The daily
-  # session republishes the site far more often than this runs, and without a
-  # stored copy the backtest page would vanish from the site every evening.
+  # Write, because the result is committed to `docs/backtest.json`. The site is
+  # republished far more often than this runs, and without a stored copy the
+  # backtest page would vanish every evening. Publishing itself belongs to
+  # `publish.yml`, which this triggers by finishing.
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   backtest:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -84,16 +79,3 @@ jobs:
           git add docs/backtest.json
           git diff --cached --quiet || git commit -m "Record backtest result [skip ci]"
           git push
-
-      - name: Render both pages
-        run: |
-          mkdir -p site
-          npm run report -- docs/backtest.json site/backtest.html
-          npm run dashboard -- site/index.html --with-backtest
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
-
-      - id: deploy
-        uses: actions/deploy-pages@v4

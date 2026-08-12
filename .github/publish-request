@@ -1,0 +1,4 @@
+# Editing this file rebuilds and republishes the site immediately.
+# Read-only against the database and safe to repeat.
+
+run: 1 — first publish

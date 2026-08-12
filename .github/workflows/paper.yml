@@ -33,19 +33,10 @@ concurrency:
   group: paper-${{ github.repository }}
   cancel-in-progress: false
 
-permissions:
-  contents: read
-  pages: write
-  id-token: write
-
 jobs:
   session:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
 
     env:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
@@ -85,26 +76,3 @@ jobs:
       - name: Database contents
         if: always()
         run: npm run db:summary
-
-      # Published even when the session halted: a page that stops updating when
-      # something goes wrong is a page you cannot trust when it does update, and
-      # the kill-switch banner is exactly what someone needs to see on a bad day.
-      - name: Render the site
-        if: always()
-        run: |
-          mkdir -p site
-          if [ -f docs/backtest.json ]; then
-            npm run report -- docs/backtest.json site/backtest.html
-            npm run dashboard -- site/index.html --with-backtest
-          else
-            npm run dashboard -- site/index.html
-          fi
-
-      - uses: actions/upload-pages-artifact@v3
-        if: always()
-        with:
-          path: site
-
-      - id: deploy
-        if: always()
-        uses: actions/deploy-pages@v4

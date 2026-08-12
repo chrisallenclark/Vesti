@@ -1,0 +1,64 @@
+# Publishes the site.
+#
+# Separate from the session on purpose. Publishing is presentation; trading is
+# the system. When these shared a job a Pages misconfiguration failed the whole
+# run before a single step executed, which meant a page nobody could see was
+# able to stop the loop from trading — precisely backwards.
+#
+# Runs after a session or a backtest finishes, whatever their result, because
+# the page is most worth reading on the days something went wrong.
+name: Publish site
+
+on:
+  workflow_run:
+    workflows: ["Paper trading — daily session", "Backtest"]
+    types: [completed]
+  workflow_dispatch:
+  push:
+    paths: [".github/publish-request"]
+
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Render
+        run: |
+          mkdir -p site
+          if [ -f docs/backtest.json ]; then
+            npm run report -- docs/backtest.json site/backtest.html
+            npm run dashboard -- site/index.html --with-backtest
+          else
+            npm run dashboard -- site/index.html
+          fi
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
