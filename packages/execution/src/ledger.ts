@@ -420,6 +420,40 @@ export class OrderLedger {
     return { quantity, averageCost: quantity > 0 ? cost / quantity : 0 };
   }
 
+  /**
+   * Shares already committed to working orders on one side of one security.
+   *
+   * The number a caller must subtract before sizing another order in the same
+   * direction, and the gap that `findSelfCrosses` deliberately does not cover:
+   * self-cross detection is about being on BOTH sides at once, so it matches on
+   * the opposite side and says nothing about a second order on the same one.
+   *
+   * The exposure that leaves is specific and bad. A stop fires and an exit for
+   * the whole position is submitted; the fill has not come back yet, so the lot
+   * still reads as held; the next cycle sees the same breached stop and the same
+   * held position and submits the exit again. Two sells of ten shares against
+   * ten shares held is a short position nobody asked for, opened by the code
+   * that was trying to close a trade.
+   *
+   * Counted from orders rather than fills on purpose — an order that has been
+   * accepted but has not filled is exactly the case this exists for.
+   */
+  async workingQuantity(params: {
+    accountId: string;
+    mandateId: string;
+    securityId: string;
+    side: Side;
+  }): Promise<number> {
+    const { rows } = await this.pool.query<{ quantity: string | null }>(
+      `SELECT sum(quantity - filled_quantity) AS quantity
+         FROM orders
+        WHERE account_id = $1 AND mandate_id = $2 AND security_id = $3 AND side = $4
+          AND status IN ('pending_risk', 'pending_new', 'working', 'partially_filled')`,
+      [params.accountId, params.mandateId, params.securityId, params.side],
+    );
+    return Number(rows[0]?.quantity ?? 0);
+  }
+
   /** Cash as a fold over the ledger. Never stored, so it cannot drift from its entries. */
   async cashBalance(accountId: string, mandateId?: string): Promise<number> {
     const { rows } = await this.pool.query<{ balance: string | null }>(

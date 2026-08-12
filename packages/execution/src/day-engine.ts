@@ -515,10 +515,26 @@ export class DayEngine {
     const market = await marketState(pool, securityId);
 
     const held = await this.#ledger.positionForMandate(accountId, mandateId, securityId);
+    // Shares already committed to a working order on this side. Without this an
+    // exit whose fill has not come back yet is proposed again on the next cycle
+    // — the lot still reads as held — and two sells against one position is a
+    // short opened by the code that was closing a trade.
+    const working = await this.#ledger.workingQuantity({
+      accountId,
+      mandateId,
+      securityId,
+      side,
+    });
     const requested =
-      signal.kind === "exit" ? Math.min(signal.quantity, held.quantity) : Number.MAX_SAFE_INTEGER;
+      signal.kind === "exit"
+        ? Math.min(signal.quantity, held.quantity - working)
+        : Number.MAX_SAFE_INTEGER;
     if (signal.kind === "exit" && requested <= 0) {
-      throw new Error("nothing held in this mandate to exit");
+      throw new Error(
+        working > 0
+          ? `an exit for ${working} share(s) is already working`
+          : "nothing held in this mandate to exit",
+      );
     }
 
     const ruling = evaluate(

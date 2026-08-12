@@ -315,10 +315,20 @@ async function actOnSignal(params: ActParams): Promise<LoopOutcome["ordersSubmit
   };
 
   const held = await ledger.positionForMandate(accountId, mandateId, securityId);
+  // Shares already committed to a working order on this side. A re-run of a
+  // session whose exit has not filled yet would otherwise submit the exit a
+  // second time, and two sells against one position is a short.
+  const working = await ledger.workingQuantity({ accountId, mandateId, securityId, side });
   const requested =
-    signal.kind === "exit" ? Math.min(signal.quantity, held.quantity) : Number.MAX_SAFE_INTEGER;
+    signal.kind === "exit"
+      ? Math.min(signal.quantity, held.quantity - working)
+      : Number.MAX_SAFE_INTEGER;
   if (signal.kind === "exit" && requested <= 0) {
-    throw new Error(`nothing held in this mandate to exit`);
+    throw new Error(
+      working > 0
+        ? `an exit for ${working} share(s) is already working`
+        : `nothing held in this mandate to exit`,
+    );
   }
 
   const ruling = evaluate(

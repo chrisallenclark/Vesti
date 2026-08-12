@@ -515,6 +515,30 @@ describe("the DAY engine, end to end", () => {
     assert.equal(Number(rows[0]!.count), 1);
   });
 
+  it("does not submit a second exit while the first is still working", async () => {
+    const engine = engineFor();
+    await engine.cycle(AT_ELEVEN);
+    broker.fillEverything();
+    await engine.cycle(AT_ELEVEN);
+
+    // The stop is breached. The exit goes out — and does not fill.
+    data.bars = new Map([[symbol, stoppedSession()]]);
+    const first = await engineFor().cycle(AT_ELEVEN);
+    assert.equal(first.submitted.length, 1);
+    assert.equal(first.submitted[0]!.side, "sell");
+
+    // Next cycle: the fill has not come back, so the lot still reads as held
+    // and the stop is still breached. Self-cross detection does not cover this
+    // — it matches the OPPOSITE side — so the only thing standing between here
+    // and a short position is the working-quantity clamp.
+    const second = await engineFor().cycle(AT_ELEVEN);
+    assert.equal(second.submitted.length, 0, "the position is already on its way out");
+    assert.match(second.refusals[0]?.reason ?? "", /already working/);
+
+    const sells = broker.submitted.filter((o) => o.side === "sell");
+    assert.equal(sells.length, 1, "ten shares held must never become twenty sold");
+  });
+
   it("does not double the shares when the same fill is delivered twice", async () => {
     const engine = engineFor();
     await engine.cycle(AT_ELEVEN);
