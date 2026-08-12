@@ -5,3 +5,4 @@ why: Promoted to exercise the intraday autonomous worker against a live venue. N
 slug: day.opening_range_breakout
 to: paper_approved
 why: Operator decision to run the DAY engine on paper only, for intraday order flow through the ledger, gate, reconciliation and equity curve. Any P&L from this is not evidence of edge and must not be read as one.
+# touch to re-run the promotion request

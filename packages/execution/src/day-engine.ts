@@ -62,6 +62,7 @@ import {
   type IntradayStrategy,
 } from "@vesti/core/strategy/intraday.ts";
 import { TRADEABLE_ON_PAPER, type StrategyStatus } from "@vesti/core/strategy/types.ts";
+import type { BrokerPortfolio } from "./alpaca.ts";
 import type { SessionBroker } from "./loop.ts";
 import { pollFills } from "./fills.ts";
 import { isKillSwitchTripped, killSwitchState } from "./killswitch.ts";
@@ -71,9 +72,21 @@ import { Observer, describe } from "./observability.ts";
 import { reconcile } from "./reconcile.ts";
 import { findSelfCrosses } from "./selfcross.ts";
 
+/**
+ * A broker that can report its own marks.
+ *
+ * Structural and separate from `SessionBroker` because reconciliation must not
+ * be able to see a mark — it compares share counts, and a reconciler with
+ * access to prices is one somebody will eventually "improve" into a valuation
+ * check that papers over a real drift.
+ */
+export interface PortfolioSource {
+  getPortfolio(): Promise<BrokerPortfolio>;
+}
+
 export interface DayEngineOptions {
   pool: pg.Pool;
-  broker: SessionBroker;
+  broker: SessionBroker & PortfolioSource;
   data: IntradayMarketData;
   observer: Observer;
   accountId: string;
@@ -132,6 +145,12 @@ export class DayEngine {
 
     const clock = await data.fetchClock(this.options.tradingBaseUrl);
     outcome.marketOpen = clock.isOpen;
+
+    // Published before any refusal below can return early: the dashboard must
+    // keep showing live equity and positions on exactly the cycles where the
+    // loop has stopped trading, which is when somebody is most likely looking
+    // at it.
+    await this.#publishBrokerSnapshot(clock.isOpen);
 
     // ── 2. Reconcile ──────────────────────────────────────────────────────
     const reconcileEvery = this.options.reconcileEvery ?? 20;
@@ -242,6 +261,38 @@ export class DayEngine {
     }
 
     return outcome;
+  }
+
+  /** Writes the broker's own view where the web app can read it. Never throws. */
+  async #publishBrokerSnapshot(marketOpen: boolean): Promise<void> {
+    try {
+      const portfolio = await this.options.broker.getPortfolio();
+      await this.options.pool.query(
+        `INSERT INTO broker_snapshots
+           (account_id, taken_at, cash, buying_power, equity, positions, day_pnl, market_open)
+         VALUES ($1, now(), $2, $3, $4, $5::jsonb, $6, $7)
+         ON CONFLICT (account_id) DO UPDATE SET
+           taken_at     = EXCLUDED.taken_at,
+           cash         = EXCLUDED.cash,
+           buying_power = EXCLUDED.buying_power,
+           equity       = EXCLUDED.equity,
+           positions    = EXCLUDED.positions,
+           day_pnl      = EXCLUDED.day_pnl,
+           market_open  = EXCLUDED.market_open`,
+        [
+          this.options.accountId,
+          portfolio.cash,
+          portfolio.buyingPower,
+          portfolio.equity,
+          JSON.stringify(portfolio.positions),
+          portfolio.dayPnl,
+          marketOpen,
+        ],
+      );
+    } catch (error) {
+      // A stale dashboard is not a reason to stop trading.
+      this.options.observer.markError(error);
+    }
   }
 
   /**

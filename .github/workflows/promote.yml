@@ -54,6 +54,9 @@ jobs:
       ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
       ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
       TRADING_MODE: PAPER
+      # setup.mts prompts for this when it is unset, and a prompt in an
+      # unattended job is a hang that reads as a failure.
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
 
     steps:
       - uses: actions/checkout@v4

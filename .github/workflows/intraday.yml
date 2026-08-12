@@ -69,6 +69,9 @@ jobs:
       # Belt and braces. The worker refuses to start unless this says PAPER and
       # the trading URL is the paper host and the account row says is_live=false.
       TRADING_MODE: PAPER
+      # setup.mts prompts for this when it is unset, and a prompt in an
+      # unattended job is a hang that reads as a failure.
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
       ALPACA_TRADING_BASE_URL: https://paper-api.alpaca.markets
 
     steps:

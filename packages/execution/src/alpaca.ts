@@ -30,6 +30,26 @@ import type {
 } from "@vesti/core/broker/types.ts";
 import { OrderRefusedError } from "@vesti/core/broker/types.ts";
 
+/** One position as the broker marks it, for the dashboard rather than for reconciliation. */
+export interface BrokerMarkedPosition {
+  symbol: string;
+  quantity: number;
+  averageCost: number;
+  marketValue: number;
+  unrealizedPnl: number;
+  unrealizedPnlFraction: number;
+  currentPrice: number | null;
+}
+
+export interface BrokerPortfolio {
+  cash: number;
+  buyingPower: number;
+  equity: number;
+  /** Equity against the previous close's equity, as the broker computes it. */
+  dayPnl: number | null;
+  positions: BrokerMarkedPosition[];
+}
+
 export const ALPACA_PAPER_URL = "https://paper-api.alpaca.markets";
 export const ALPACA_LIVE_URL = "https://api.alpaca.markets";
 
@@ -248,6 +268,68 @@ export class AlpacaBroker implements BrokerAdapter {
       cash: Number(payload.cash),
       buyingPower: Number(payload.buying_power),
       equity: Number(payload.equity),
+    };
+  }
+
+  /**
+   * The broker's whole current view in one call pair: balances plus positions
+   * with their marks.
+   *
+   * Exists because the dashboard needs live P&L and must not hold a trading
+   * credential to get it — the worker takes this and writes it to
+   * `broker_snapshots`, so the number the operator reads is Alpaca's own rather
+   * than one this system recomputed and could be wrong about.
+   *
+   * `listPositions` deliberately stays narrow: it feeds reconciliation, which
+   * compares share counts and has no business reading a mark.
+   */
+  async getPortfolio(): Promise<BrokerPortfolio> {
+    const [accountResponse, positionsResponse] = await Promise.all([
+      this.#request("GET", "/v2/account"),
+      this.#request("GET", "/v2/positions"),
+    ]);
+    if (!accountResponse.ok) {
+      throw new Error(`Alpaca getAccount failed: ${accountResponse.status}`);
+    }
+    if (!positionsResponse.ok) {
+      throw new Error(`Alpaca listPositions failed: ${positionsResponse.status}`);
+    }
+
+    const account = (await accountResponse.json()) as {
+      cash: string;
+      buying_power: string;
+      equity: string;
+      last_equity: string;
+    };
+    const positions = (await positionsResponse.json()) as Array<{
+      symbol: string;
+      qty: string;
+      avg_entry_price: string;
+      market_value: string;
+      unrealized_pl: string;
+      unrealized_plpc: string;
+      current_price: string | null;
+    }>;
+
+    const equity = Number(account.equity);
+    const lastEquity = Number(account.last_equity);
+    return {
+      cash: Number(account.cash),
+      buyingPower: Number(account.buying_power),
+      equity,
+      // Alpaca's own day P&L basis: equity now against the previous close's
+      // equity. Recomputing it from fills would disagree with the broker's
+      // screen, and the operator will be looking at both.
+      dayPnl: Number.isFinite(lastEquity) ? equity - lastEquity : null,
+      positions: positions.map((p) => ({
+        symbol: p.symbol,
+        quantity: Number(p.qty),
+        averageCost: Number(p.avg_entry_price),
+        marketValue: Number(p.market_value),
+        unrealizedPnl: Number(p.unrealized_pl),
+        unrealizedPnlFraction: Number(p.unrealized_plpc),
+        currentPrice: p.current_price === null ? null : Number(p.current_price),
+      })),
     };
   }
 
