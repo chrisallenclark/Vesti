@@ -164,6 +164,39 @@ export class Observer {
     this.#lastPassReason.delete(symbol);
   }
 
+  /**
+   * Whether this process still owns the right to trade this account.
+   *
+   * Mutual exclusion between workers, enforced by the database rather than by
+   * CI configuration. Two workers on one account is the shape of a duplicate
+   * order: both evaluate the same bar, both look up whether the symbol has been
+   * traded today, both see nothing, both submit. A concurrency group in a
+   * workflow file is a real guard until somebody starts a worker by hand, or a
+   * scheduler double-fires, or a job is retried — and none of those are
+   * unlikely.
+   *
+   * The lease is simply the heartbeat: whoever wrote it most recently owns the
+   * account. A worker that finds a DIFFERENT id beating recently must not
+   * trade; a worker that finds a stale one takes over, which is what makes an
+   * abandoned or wedged predecessor recoverable without anybody intervening.
+   *
+   * Returns the holder when it is somebody else, and null when it is us (or
+   * nobody).
+   */
+  async leaseHolder(staleAfterMs: number): Promise<{ workerId: string; ageSeconds: number } | null> {
+    const { rows } = await this.options.pool.query<{ worker_id: string; age: string }>(
+      `SELECT worker_id, extract(epoch FROM (now() - last_beat_at)) AS age
+         FROM worker_state WHERE account_id = $1 AND engine = $2`,
+      [this.options.accountId, this.options.engine],
+    );
+    const row = rows[0];
+    if (!row || row.worker_id === this.options.workerId) return null;
+
+    const ageSeconds = Number(row.age);
+    if (ageSeconds * 1000 > staleAfterMs) return null; // abandoned; ours to take
+    return { workerId: row.worker_id, ageSeconds };
+  }
+
   /** Upserts the heartbeat. Never throws. */
   async beat(status: WorkerStatus, health: HealthFlags = {}): Promise<void> {
     this.#cycles += 1;

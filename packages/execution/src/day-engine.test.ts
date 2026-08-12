@@ -566,6 +566,44 @@ describe("the DAY engine, end to end", () => {
 
   // ── The refusals ──────────────────────────────────────────────────────────
 
+  it("refuses to let a second worker trade the same account", async () => {
+    // One worker beating now.
+    const incumbent = new Observer({
+      pool,
+      accountId,
+      engine: "DAY",
+      tradingMode: "paper",
+      workerId: "incumbent",
+    });
+    await incumbent.beat("running", { alpacaOk: true });
+
+    const challenger = new Observer({
+      pool,
+      accountId,
+      engine: "DAY",
+      tradingMode: "paper",
+      workerId: "challenger",
+    });
+    const holder = await challenger.leaseHolder(3 * 60 * 1000);
+    assert.equal(holder?.workerId, "incumbent", "a live incumbent holds the account");
+
+    // The incumbent sees itself, not a rival.
+    assert.equal(await incumbent.leaseHolder(3 * 60 * 1000), null);
+
+    // Once the incumbent has gone quiet, the account is takeable — which is
+    // what makes a wedged or killed worker recoverable without a human.
+    await pool.query(
+      `UPDATE worker_state SET last_beat_at = now() - interval '10 minutes'
+        WHERE account_id = $1 AND engine = 'DAY'`,
+      [accountId],
+    );
+    assert.equal(
+      await challenger.leaseHolder(3 * 60 * 1000),
+      null,
+      "an abandoned lease must not lock the account for the rest of the day",
+    );
+  });
+
   it("submits nothing while the kill switch is tripped", async () => {
     await tripKillSwitch(pool, { accountId, reason: "testing the halt", by: "test" });
 

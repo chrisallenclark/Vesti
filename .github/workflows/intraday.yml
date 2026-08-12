@@ -49,10 +49,20 @@ on:
     paths: [".github/intraday-request"]
 
 concurrency:
-  # Shared with the bootstrap and the daily session: only one thing may be
-  # trading this account at a time. Never cancel-in-progress — cancelling a
-  # worker mid-cycle is how an order gets submitted and its fill never posted.
-  group: paper-${{ github.repository }}
+  # The worker has its own group, and mutual exclusion between workers is
+  # enforced by a LEASE in the database rather than here — whoever wrote the
+  # heartbeat most recently owns the account, and a worker that finds another
+  # one beating refuses to start.
+  #
+  # That is the right place for it. A concurrency group stops being a guard the
+  # moment somebody starts a worker by hand, and it is far too strong in the
+  # other direction: a wedged run holds the slot for its whole timeout, so a
+  # replacement carrying the fix cannot start until the broken one gives up. On
+  # the day that mattered, that was five hours of a six-and-a-half-hour session.
+  #
+  # Never cancel-in-progress — cancelling a worker mid-cycle is how an order
+  # gets submitted and its fill never posted.
+  group: paper-worker-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:

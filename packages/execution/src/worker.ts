@@ -59,6 +59,16 @@ const SNAPSHOT_EVERY_CYCLES = 15;
  */
 const CYCLE_TIMEOUT_MS = 90_000;
 
+/**
+ * How quiet another worker must be before this one takes the account over.
+ *
+ * Comfortably more than a cycle interval plus a cycle timeout, so a healthy
+ * worker having one slow cycle is never mistaken for an abandoned one. Less
+ * than a session, so a wedged or killed predecessor does not lock the account
+ * for the rest of the day.
+ */
+const LEASE_STALE_MS = 3 * 60 * 1000;
+
 /** Rejects if the cycle has not settled in time, so the loop can carry on. */
 function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -214,6 +224,20 @@ async function main(): Promise<void> {
       dryRun,
     });
 
+    // ── Only one worker may trade this account ──────────────────────────────
+    // Enforced here rather than by a workflow's concurrency group, because that
+    // guard stops being one the moment somebody starts a worker by hand or a
+    // job is retried — and two workers on one account is the shape of a
+    // duplicate order.
+    const holder = await observer.leaseHolder(LEASE_STALE_MS);
+    if (holder) {
+      throw new Error(
+        `Another DAY worker (${holder.workerId}) beat ${Math.round(holder.ageSeconds)}s ago on ` +
+          `this account. Refusing to start a second one — two workers on one account is how the ` +
+          `same signal becomes two orders. Wait for it to stop, or halt it.`,
+      );
+    }
+
     await observer.beat("starting", { alpacaOk: true, databaseOk: true });
     const standing = await strategyStanding(pool, account.id, strategy);
     await observer.say({
@@ -296,6 +320,20 @@ async function main(): Promise<void> {
         strategyActive: status === "running",
         killSwitch: status === "halted",
       });
+
+      // Re-checked every cycle, not only at startup: a replacement that took
+      // over while this process was wedged must be able to evict it if it ever
+      // wakes up. Whoever beat last owns the account, and this worker has just
+      // beaten, so a different id here means somebody else has taken it since.
+      const usurper = await observer.leaseHolder(LEASE_STALE_MS);
+      if (usurper) {
+        await observer.say({
+          level: "warn",
+          kind: "lease_lost",
+          message: `${usurper.workerId} has taken over this account — stopping`,
+        });
+        break;
+      }
 
       cycles += 1;
       if (cycles % SNAPSHOT_EVERY_CYCLES === 0) {
