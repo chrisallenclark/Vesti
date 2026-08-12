@@ -79,6 +79,54 @@ export async function ingestDailyBars(
   // context"), and an explicit comparison is clearer about intent anyway.
   const existing = await loadExisting(client, [...securityIds.values()], bars);
 
+  /**
+   * New bars are inserted in batches rather than one statement each.
+   *
+   * A first backfill is tens of thousands of rows, and one round trip per row is
+   * only cheap when the database is on the same machine. Against a hosted one it
+   * is the entire cost of the job: a ten-year load spent over half an hour
+   * waiting on latency and timed out before it finished, having transferred a
+   * few megabytes.
+   *
+   * Batched, the same load is a few dozen statements. Nothing else changes —
+   * same columns, same `observed_at` expression per row, same counts — because
+   * the value being protected here is the timestamp semantics below, not the
+   * shape of the statement.
+   */
+  const pendingInserts: unknown[][] = [];
+  // 11 parameters a row against Postgres's 65535-parameter ceiling leaves plenty
+  // of headroom, and keeps any single statement small enough to fail cheaply.
+  const INSERT_CHUNK = 500;
+  const INSERT_COLUMNS = 11;
+
+  const flushInserts = async (): Promise<void> => {
+    if (pendingInserts.length === 0) return;
+
+    const tuples: string[] = [];
+    const values: unknown[] = [];
+    for (const [index, row] of pendingInserts.entries()) {
+      const base = index * INSERT_COLUMNS;
+      const placeholders = Array.from({ length: INSERT_COLUMNS }, (_, i) => `$${base + i + 1}`);
+      // 22:00 UTC is comfortably after the 4pm ET close in either DST offset,
+      // and after the vendor consolidation window. Erring late is the safe
+      // direction: it can only withhold data from a backtest, never leak it
+      // early. `least(now(), ...)` covers fetching today's bar mid-session.
+      tuples.push(
+        `(${placeholders.join(", ")}, ` +
+          `least(now(), ($${base + 2}::date + interval '22 hours') AT TIME ZONE 'UTC'))`,
+      );
+      values.push(...row);
+    }
+
+    await client.query(
+      `INSERT INTO bars_daily
+         (security_id, session_date, open, high, low, close, volume, trade_count, vwap, tape, source_id, observed_at)
+       VALUES ${tuples.join(", ")}`,
+      values,
+    );
+    pendingInserts.length = 0;
+  };
+
   for (const bar of bars) {
     const problems = validateBar(bar);
     if (problems.length > 0) {
@@ -95,30 +143,21 @@ export async function ingestDailyBars(
     const prior = existing.get(`${securityId}|${bar.sessionDate}`);
 
     if (prior === undefined) {
-      await client.query(
-        // 22:00 UTC is comfortably after the 4pm ET close in either DST offset,
-        // and after the vendor consolidation window. Erring late is the safe
-        // direction: it can only withhold data from a backtest, never leak it
-        // early. `least(now(), ...)` covers fetching today's bar mid-session.
-        `INSERT INTO bars_daily
-           (security_id, session_date, open, high, low, close, volume, trade_count, vwap, tape, source_id, observed_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 least(now(), ($2::date + interval '22 hours') AT TIME ZONE 'UTC'))`,
-        [
-          securityId,
-          bar.sessionDate,
-          bar.open,
-          bar.high,
-          bar.low,
-          bar.close,
-          bar.volume,
-          bar.tradeCount ?? null,
-          bar.vwap ?? null,
-          provider.tape,
-          sourceId,
-        ],
-      );
+      pendingInserts.push([
+        securityId,
+        bar.sessionDate,
+        bar.open,
+        bar.high,
+        bar.low,
+        bar.close,
+        bar.volume,
+        bar.tradeCount ?? null,
+        bar.vwap ?? null,
+        provider.tape,
+        sourceId,
+      ]);
       report.inserted += 1;
+      if (pendingInserts.length >= INSERT_CHUNK) await flushInserts();
       continue;
     }
 
@@ -158,6 +197,11 @@ export async function ingestDailyBars(
     );
     report.revised += 1;
   }
+
+  // Whatever did not reach a full batch. Nothing is reported as inserted until
+  // this succeeds, because the counts are returned to a caller that treats them
+  // as a record of what the database now holds.
+  await flushInserts();
 
   return report;
 }
