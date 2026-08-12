@@ -1,0 +1,89 @@
+# One-time setup for autonomous paper trading.
+#
+# Separate from the daily run, and deliberately not on a schedule, because two
+# of these steps must happen exactly once. `--deposit` records an external
+# transfer into the cash ledger; running it twice would assert capital that was
+# never transferred and every position size after that would be wrong. So this
+# is triggered by hand, by editing `.github/paper-bootstrap-request`.
+#
+# What it does, in the order the design requires:
+#
+#   1. Bootstraps the account row for the Alpaca paper account.
+#   2. Records opening capital and allocates it across the three mandates.
+#   3. Registers the strategies in the code registry at `experimental`.
+#   4. Walks one of them up the ladder to `paper_approved`, one rung at a time.
+#
+# Step 4 is a judgement, not a computation. The Strategy Lab that would make it
+# a computation is Phase 4 and does not exist, so this is the promotion the
+# registry describes as "the one a human makes with their eyes open, to paper,
+# where being wrong costs nothing but time". What it buys is realistic order
+# flow through the ledger, the gate, reconciliation and the equity curve. It is
+# not evidence that the strategy has an edge, and the strategy's own header says
+# so at length.
+name: Paper trading — bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      opening_capital:
+        description: "Opening capital to record, in dollars. Must match what the broker actually holds."
+        required: false
+        default: "100000"
+  push:
+    paths: [".github/paper-bootstrap-request"]
+
+concurrency:
+  group: paper-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
+      OPENING_CAPITAL: ${{ inputs.opening_capital || '100000' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # Writes .env with the four role URLs the execution and research roles need.
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      # Creates the account row against the real Alpaca paper account. --dry-run
+      # stops before submitting anything.
+      - name: Bootstrap the account
+        run: npm run paper -w @vesti/execution -- --dry-run --symbol AAPL --quantity 1 --mandate active
+
+      - name: Record opening capital and allocate it
+        run: npm run session -w @vesti/execution -- --deposit "$OPENING_CAPITAL" --ref "opening paper balance"
+
+      - name: Register the strategies
+        run: npm run session -w @vesti/execution -- --register
+
+      # The ladder only moves one rung at a time, by design, so this is two calls.
+      - name: Promote to validating
+        run: |
+          npm run session -w @vesti/execution -- \
+            --promote active.trend_pullback --to validating \
+            --why "Promoted to exercise the autonomous loop against a live venue. Not a validated edge: no backtest, no walk-forward, no regime stratification exists yet (Phase 4)."
+
+      - name: Promote to paper_approved
+        run: |
+          npm run session -w @vesti/execution -- \
+            --promote active.trend_pullback --to paper_approved \
+            --why "Operator decision to run on paper only, for order flow through the ledger, gate, reconciliation and equity curve. Any P&L from this is not evidence of edge and must not be read as one."
+
+      - name: What the loop would do now
+        if: always()
+        run: npm run session -w @vesti/execution -- --status

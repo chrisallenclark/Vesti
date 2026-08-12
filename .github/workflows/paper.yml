@@ -1,0 +1,78 @@
+# The daily autonomous session.
+#
+# Runs after the US close on weekdays: refresh prices, then run one session —
+# reconcile, check the kill switch, take exits, then entries, then mark equity.
+# The loop is idempotent, so a re-run after a failure finishes the job rather
+# than doubling it, and a day that is not a trading day is a no-op it decides
+# for itself rather than something the schedule has to know.
+#
+# Prices first, deliberately. The session decides from the last completed
+# session's bars, and a loop reading a stale bar is sizing against a price that
+# is no longer true — worse than not trading at all.
+#
+# 21:30 UTC is after the 16:00 ET close in both offsets: 20:00 UTC under EDT,
+# 21:00 UTC under EST. Cron here is UTC and does not follow daylight saving, so
+# the later of the two is the one to use year round.
+name: Paper trading — daily session
+
+on:
+  schedule:
+    - cron: "30 21 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Decide everything, submit nothing"
+        type: boolean
+        required: false
+        default: false
+  push:
+    paths: [".github/paper-request"]
+
+concurrency:
+  # Shares a group with the bootstrap: neither should run while the other does.
+  group: paper-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      # Only the recent window: the ten-year backfill is already in place, and
+      # re-reading it every evening would spend minutes to learn nothing.
+      - name: Refresh prices and corporate actions
+        run: |
+          FROM=$(date -u -d '10 days ago' +%F)
+          npm run ingest -w @vesti/ingest -- sync --universe starter --from "$FROM"
+
+      - name: Run the session
+        run: |
+          npm run session -w @vesti/execution -- ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # Runs even when the session halted, because the reason it halted is the
+      # thing worth reading, and `--status` prints the kill switch, the capital
+      # position and each strategy's standing.
+      - name: Standing after the session
+        if: always()
+        run: npm run session -w @vesti/execution -- --status
+
+      - name: Database contents
+        if: always()
+        run: npm run db:summary
