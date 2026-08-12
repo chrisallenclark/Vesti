@@ -9,4 +9,4 @@
 # EDGAR fundamentals. For anything else, use Actions → Set up and ingest → Run
 # workflow, which takes parameters.
 
-run: 1 — first ingest against the hosted database
+run: 2 — retry with batched inserts, after the first run timed out on latency
