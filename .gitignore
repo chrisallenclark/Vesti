@@ -38,5 +38,10 @@ coverage/
 
 # Local scratch
 shot.mjs
+# Rendered site and scratch backtest output are artifacts of a run, never
+# checked in — a committed report is one that eventually goes stale while still
+# looking authoritative. `docs/backtest.json` is the deliberate exception: the
+# daily session republishes the site and needs the last result to render from.
 site/
-backtest.json
+/backtest.json
+!docs/backtest.json

@@ -20,7 +20,8 @@
     "test": "npm run test --workspaces --if-present && tsx --test scripts/*.test.mts",
     "db:summary": "tsx --env-file-if-exists=.env scripts/summary.mts",
     "backtest": "npm run backtest -w @vesti/lab",
-    "report": "tsx scripts/report.mts"
+    "report": "tsx scripts/report.mts",
+    "dashboard": "tsx --env-file-if-exists=.env scripts/dashboard.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

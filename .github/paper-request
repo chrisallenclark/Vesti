@@ -1,0 +1,5 @@
+# Editing this file runs one session immediately, outside the schedule, and
+# republishes the site. Safe to repeat: the session is idempotent, so a re-run
+# finishes the day's work rather than doubling it.
+
+run: 1 — first session, and the first publish of the dashboard
