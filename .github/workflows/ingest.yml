@@ -54,7 +54,12 @@ jobs:
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
       ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
-      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || format('Vesti Research {0}@users.noreply.github.com', github.repository_owner) }}
+      # The SEC refuses requests without a real contact and returns 403, which
+      # is indistinguishable from a policy block. A `users.noreply.github.com`
+      # address is not a real contact and was refused, so the fallback is the
+      # repository owner's own address — already public in every commit here.
+      # Override it with a SEC_EDGAR_USER_AGENT secret to use a different one.
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
 
     steps:
       - name: Check the database secret is present

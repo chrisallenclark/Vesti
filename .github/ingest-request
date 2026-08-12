@@ -9,4 +9,4 @@
 # EDGAR fundamentals. For anything else, use Actions → Set up and ingest → Run
 # workflow, which takes parameters.
 
-run: 2 — retry with batched inserts, after the first run timed out on latency
+run: 3 — fundamentals only outstanding; SEC needs a real contact in the User-Agent
