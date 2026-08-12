@@ -1,0 +1,12 @@
+# Editing this file starts the "Set up and ingest" workflow.
+#
+# It exists because the workflow could not otherwise be started by anything that
+# can only push commits: API dispatch and tag pushes are both refused to some
+# integrations, while a commit is not. Change the line below — the value is
+# irrelevant, the change is the signal — and push.
+#
+# Runs use the workflow's defaults: the starter universe from 2016-01-01, then
+# EDGAR fundamentals. For anything else, use Actions → Set up and ingest → Run
+# workflow, which takes parameters.
+
+run: 1 — first ingest against the hosted database

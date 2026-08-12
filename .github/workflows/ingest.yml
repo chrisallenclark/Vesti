@@ -30,12 +30,15 @@ on:
         required: false
         default: false
 
-  # A second way in, for anyone who can push but cannot press the button:
-  # pushing a tag named `run-ingest-<anything>` starts a run with the defaults.
-  # Scoped to that prefix so ordinary tags — releases, checkpoints — do not
-  # quietly rewrite the database.
+  # A second way in, for anyone who can push but cannot press the button —
+  # dispatching through the API and pushing tags are both refused to some
+  # integrations. Committing a change to the request file below starts a run
+  # with the defaults.
+  #
+  # Keyed to one path so that ordinary commits never rewrite the database: only
+  # a deliberate edit to a file whose entire purpose is to ask for a run.
   push:
-    tags: ["run-ingest-*"]
+    paths: [".github/ingest-request"]
 
 concurrency:
   # Two runs writing the same database would interleave their migrations.
