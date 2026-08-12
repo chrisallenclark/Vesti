@@ -2,4 +2,4 @@
 # republishes the site. Safe to repeat: the session is idempotent, so a re-run
 # finishes the day's work rather than doubling it.
 
-run: 1 — first session, and the first publish of the dashboard
+run: 2 — verify the session runs now that publishing is a separate workflow
