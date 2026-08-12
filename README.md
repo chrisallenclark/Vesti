@@ -6,9 +6,58 @@ validation ladder honest enough to conclude "no edge found."
 
 Paper trading before real capital. Objective gates before autonomy.
 
-> **Status: Phase 0 complete.** The database enforces the invariants; nothing can
-> trade yet and no strategy exists. See [BUILD_STATUS.md](./BUILD_STATUS.md) —
-> including its *Honest limitations* section.
+> **Status: the DAY engine trades on paper, autonomously, and you can watch it.**
+> A worker runs through the session on real market data; entries and exits go
+> through the deterministic risk engine and the execution gate to Alpaca PAPER,
+> fills come back into the ledger, and the dashboard shows it happening. The
+> strategy behind it is **unvalidated** — it exists so the machinery has
+> something real to run, not because it has an edge. CATALYST and WEALTH are not
+> built. See [BUILD_STATUS.md](./BUILD_STATUS.md), including its *Honest
+> limitations*.
+
+---
+
+## Watching it trade
+
+Two processes against the same database. The dashboard is read-only and holds no
+broker credential.
+
+```bash
+npm run worker -w @vesti/execution   # the DAY worker — paper only, refuses otherwise
+npm run dev    -w @vesti/web         # the desk, at localhost:3000
+```
+
+The desk shows the mode, portfolio value, today's P&L, cash and buying power,
+open positions with the stop and target recorded at entry, working orders, what
+the trader is thinking as it thinks it, the journal, and a kill switch. It polls
+every three seconds; nothing needs refreshing.
+
+Status is corrected by heartbeat age rather than read from the worker's last row
+— a process that dies stops writing rather than writing "stopped", so a
+dashboard that trusts the row shows RUNNING for something that has not existed
+since 10:40.
+
+Before a session, or during one when it has not traded and you want to know why:
+
+```bash
+npm run preflight -w @vesti/execution
+```
+
+Every line is a live round trip — authentication, balances, positions, working
+orders, the venue clock, the database, the feed — and it finishes by running the
+real strategy over the real feed and printing what each rule concluded about
+each symbol. It is strictly read-only, so it is safe to run while the worker is
+running.
+
+Unattended, the same worker runs in GitHub Actions through each session
+(`intraday.yml`). `workflow_dispatch` is refused for this repository's token, so
+every workflow can also be started by committing its request file under
+`.github/`.
+
+**Paper only.** The worker refuses to start unless the trading URL is Alpaca's
+paper host, `TRADING_MODE` is `PAPER`, and the account row says `is_live = false`.
+Live autonomous trading is not enabled and will not be without a deliberate,
+separate decision.
 
 ---
 
@@ -117,10 +166,14 @@ which is the main reason to prefer it.
 ## Layout
 
 ```
-apps/web/            Next.js 15 PWA. Presentation only — no domain logic.
-packages/db/         Migrations, migration runner, invariant tests.   [Phase 0 ✅]
-packages/core/       Domain types and the deterministic risk engine.
-services/quant/      Python: features, patterns, backtest, Monte Carlo.
+apps/web/            Next.js PWA. The desk. Presentation only — no domain logic,
+                     no broker credential, and no write path to orders.
+packages/db/         Migrations, migration runner, invariant tests.
+packages/core/       Pure domain: risk engine, strategies, calendar. No I/O.
+packages/execution/  The worker, the ledger, the Alpaca adapter, reconciliation.
+packages/ingest/     Market data and evidence into the point-in-time layer.
+packages/lab/        Backtester.
+services/quant/      Python: features, patterns, Monte Carlo.
 ```
 
 ---
