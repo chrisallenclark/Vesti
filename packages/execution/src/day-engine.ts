@@ -614,7 +614,7 @@ export class DayEngine {
       engineVersion: ruling.engineVersion,
     });
 
-    await this.#recordDecision(orderId, signal, ruling.riskAmount, strategyVersionId);
+    await this.#recordDecision(orderId, signal, ruling.riskAmount);
 
     await observer.say({
       level: "signal",
@@ -662,13 +662,19 @@ export class DayEngine {
     return { orderId, symbol: signal.symbol, side, quantity };
   }
 
+  /**
+   * The thesis behind one order, written before it is submitted.
+   *
+   * The strategy version is deliberately NOT recorded here — it is on the order
+   * row, which is the execution record, and duplicating it would create two
+   * places for the same fact to disagree. What lives here is only what the
+   * order row cannot hold: why.
+   */
   async #recordDecision(
     orderId: string,
     signal: IntradaySignal,
     riskAmount: number,
-    strategyVersionId: string,
   ): Promise<void> {
-    void strategyVersionId;
     const { strategy, accountId, pool } = this.options;
     await pool.query(
       `INSERT INTO trade_decisions
