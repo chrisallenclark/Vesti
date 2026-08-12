@@ -7,6 +7,23 @@ trading before building the research/AI layer.
 
 ## Where things stand
 
+**The DAY engine trades on paper, autonomously, through a live session.** A
+worker runs the loop end to end — real intraday bars from Alpaca's IEX feed, one
+deterministic strategy, the risk engine, the execution gate, PAPER orders, fills
+posted back into the ledger, reconciliation against the broker's own count, and
+a dashboard that shows it happening while it happens. Verified against the live
+venue on 2026-08-12: authentication, balances, positions, working orders, the
+venue clock, a real-time feed one minute behind, and a strategy the database has
+promoted to `paper_approved`.
+
+What that is NOT is evidence of an edge. Both registered strategies are
+unvalidated — no backtest, no walk-forward, no regime stratification — and exist
+so the machinery has something real to run. The validation ladder that would
+change this is Phase 4 and does not exist. Do not read paper P&L as a result.
+
+CATALYST and WEALTH are not built. The schema labels every trade by engine, so
+they can be added without rework, but neither has a strategy or a worker.
+
 **Phase 0 (Foundations) — complete.** The database enforces every invariant the
 rest of the system depends on. 25 automated assertions pass against a database
 built from nothing.
