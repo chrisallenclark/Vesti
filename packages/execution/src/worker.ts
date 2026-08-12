@@ -181,11 +181,17 @@ async function main(): Promise<void> {
       let status: Parameters<Observer["beat"]>[0] = "running";
       let marketOpen = false;
       let alpacaOk = false;
+      // Whether BARS ACTUALLY ARRIVED this cycle, which is not the same as the
+      // market being open. Reporting the market's state as the feed's health
+      // makes a dead feed indistinguishable from a closed venue, and that is
+      // precisely the confusion the health flags exist to remove.
+      let dataOk = false;
 
       try {
         const outcome = await engine.cycle();
         alpacaOk = true;
         marketOpen = outcome.marketOpen;
+        dataOk = outcome.symbolsScanned > 0;
 
         if (outcome.haltReason) {
           // "Market closed" and "not promoted" are the system working, not a
@@ -224,7 +230,7 @@ async function main(): Promise<void> {
 
       await observer.beat(status, {
         alpacaOk,
-        marketDataOk: alpacaOk && marketOpen,
+        marketDataOk: dataOk,
         databaseOk: true,
         marketOpen,
         strategyActive: status === "running",

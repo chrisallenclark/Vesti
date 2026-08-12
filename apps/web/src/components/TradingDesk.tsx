@@ -239,8 +239,12 @@ export function TradingDesk({ initial }: { initial: LiveView | null }) {
           <Light ok={!view.isLive} label="Mode" detail={day?.tradingMode?.toUpperCase() ?? "PAPER"} />
           <Light ok={marketOpen} label="Market" detail={marketOpen ? "OPEN" : "CLOSED"} />
           <Light ok={day?.alpacaOk ?? null} label="Alpaca" />
+          {/* Null rather than false while the market is closed: there are no
+              bars to receive, so "DISCONNECTED" would be an accusation against
+              a feed that is behaving correctly. The last-received time is still
+              shown, which is the thing worth watching. */}
           <Light
-            ok={day?.marketDataOk ?? null}
+            ok={marketOpen ? (day?.marketDataOk ?? null) : null}
             label="Market data"
             detail={day?.lastDataAt ? ago(day.lastDataAt) : undefined}
           />
