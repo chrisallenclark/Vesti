@@ -43,6 +43,42 @@ const DEFAULT_INTERVAL_SECONDS = 20;
 /** Equity is re-marked this often, so the dashboard's curve does not go stale. */
 const SNAPSHOT_EVERY_CYCLES = 15;
 
+/**
+ * How long one cycle may take before it is written off.
+ *
+ * Belt to the request timeouts' braces, and earned the hard way: the first live
+ * worker stopped cycling after four minutes and sat there for the rest of the
+ * morning with the job still green and the heartbeat frozen. The cause was a
+ * request that never settled, and per-request timeouts fix that specific case —
+ * but "the loop stopped turning" is a failure mode worth defending in depth,
+ * because any future await that can hang reintroduces it.
+ *
+ * Long enough that a slow cycle is never mistaken for a stuck one: a cycle is
+ * a handful of round trips, each capped at twenty seconds, and normally takes
+ * under two.
+ */
+const CYCLE_TIMEOUT_MS = 90_000;
+
+/** Rejects if the cycle has not settled in time, so the loop can carry on. */
+function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${what} did not finish within ${ms / 1000}s — abandoning this cycle`)),
+      ms,
+    );
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
   return index === -1 ? undefined : process.argv[index + 1];
@@ -207,7 +243,12 @@ async function main(): Promise<void> {
       let dataOk = false;
 
       try {
-        const outcome = await engine.cycle();
+        // The abandoned cycle keeps running in the background — there is no way
+        // to interrupt an await — but the loop moves on, the heartbeat keeps
+        // beating, and the next cycle re-derives everything from the database
+        // and the broker anyway. A stalled cycle costs a cycle rather than a
+        // session.
+        const outcome = await withTimeout(engine.cycle(), CYCLE_TIMEOUT_MS, "cycle");
         alpacaOk = true;
         marketOpen = outcome.marketOpen;
         dataOk = outcome.symbolsScanned > 0;

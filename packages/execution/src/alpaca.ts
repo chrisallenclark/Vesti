@@ -403,10 +403,23 @@ export class AlpacaBroker implements BrokerAdapter {
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     };
 
+    // A hung request would otherwise wait forever — `fetch` has no default
+    // timeout, and a socket that is open but silent never rejects. In a
+    // long-running worker that is the worst failure there is: the loop is
+    // sequential, so one stalled request stops the whole session and the
+    // process goes on looking alive. Observed in the first live run, which
+    // stopped cycling after four minutes with the job still green.
+    //
+    // A timeout turns that into a transport error, which the retry below
+    // already knows how to handle.
+
     let lastError: unknown;
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
       try {
-        const response = await this.#fetch(url, init);
+        const response = await this.#fetch(url, {
+          ...init,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
         if (isProxyDnsFailure(response.status)) {
           const body = await response.text().catch(() => "");
           if (/dns resolution failure/i.test(body)) {
@@ -432,6 +445,14 @@ export class AlpacaBroker implements BrokerAdapter {
 }
 
 const RETRY_DELAYS_MS = [250, 1000, 3000];
+
+/**
+ * How long a single request may take before it is abandoned.
+ *
+ * Generous — Alpaca answers in tens of milliseconds — because the point is not
+ * to police latency but to guarantee that a request ALWAYS settles.
+ */
+const REQUEST_TIMEOUT_MS = 15_000;
 
 function isRetryable(status: number): boolean {
   return status >= 500 || status === 429;

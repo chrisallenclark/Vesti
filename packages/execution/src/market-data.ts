@@ -62,6 +62,17 @@ export interface IntradayDataOptions {
 
 const RETRY_DELAYS_MS = [250, 1000, 3000];
 
+/**
+ * How long a single request may take before it is abandoned.
+ *
+ * `fetch` has no default timeout and a socket that is open but silent never
+ * rejects, so without this a stalled request blocks the worker's sequential
+ * loop for the rest of the session while the process goes on looking alive.
+ * That is exactly what the first live run did. A timeout turns the stall into a
+ * transport error, which the retry below already handles.
+ */
+const REQUEST_TIMEOUT_MS = 20_000;
+
 export class IntradayMarketData {
   readonly feed: "iex" | "sip";
 
@@ -197,7 +208,10 @@ export class IntradayMarketData {
     let lastError: unknown;
     for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt += 1) {
       try {
-        const response = await this.#fetch(url, init);
+        const response = await this.#fetch(url, {
+          ...init,
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
         if (!isRetryable(response.status) || attempt === RETRY_DELAYS_MS.length) return response;
       } catch (error) {
         lastError = error;
