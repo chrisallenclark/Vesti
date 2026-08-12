@@ -1,0 +1,49 @@
+# Does the integration actually work? Asked of the real venue.
+#
+# Deliberately NOT in the `paper-` concurrency group, and safe not to be: this
+# workflow is strictly read-only. It submits nothing, cancels nothing and writes
+# nothing — not even a heartbeat — so it can run while the DAY worker is running,
+# which is exactly when somebody wants to ask whether the venue is reachable.
+#
+# During a session it also answers "why has it not traded?", because it runs the
+# real strategy over the real feed and prints what each rule concluded about each
+# symbol, in the words of the rule.
+name: Paper trading — preflight
+
+on:
+  workflow_dispatch:
+  push:
+    paths: [".github/preflight-request"]
+
+concurrency:
+  group: preflight-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      TRADING_MODE: PAPER
+      ALPACA_TRADING_BASE_URL: https://paper-api.alpaca.markets
+      SEC_EDGAR_USER_AGENT: ${{ secrets.SEC_EDGAR_USER_AGENT || 'Vesti Research chrisallenclarkjr@gmail.com' }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # --no-ingest and no migrations: this must not change anything, including
+      # the schema.
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      - name: Preflight
+        run: npm run preflight -w @vesti/execution
