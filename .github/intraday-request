@@ -1,2 +1,2 @@
-Start a worker carrying the timeout fix and the lease.
-Wed Aug 12 14:10:15 UTC 2026
+Start a worker whose database calls are bounded too.
+Wed Aug 12 14:24:57 UTC 2026

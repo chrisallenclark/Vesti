@@ -140,7 +140,26 @@ async function main(): Promise<void> {
   const once = flag("once");
   const dryRun = flag("dry-run");
 
-  const pool = new pg.Pool({ connectionString, max: 4 });
+  // Every one of these bounds exists because a query that HANGS is far worse
+  // than one that fails. `pg` has no default query timeout, the database is
+  // serverless and scales its compute in and out, and a connection that has
+  // silently gone away does not error — it simply never answers. In a
+  // sequential loop that stops the session, which is exactly what the first two
+  // live workers did: one froze at twelve cycles, its replacement at three.
+  //
+  // With these, a dead connection becomes a rejection the loop already handles.
+  const pool = new pg.Pool({
+    connectionString,
+    max: 4,
+    connectionTimeoutMillis: 10_000,
+    // Client-side: rejects the promise even if the server never replies.
+    query_timeout: 15_000,
+    // Server-side: stops a query that IS running from running forever.
+    statement_timeout: 15_000,
+    idle_in_transaction_session_timeout: 30_000,
+    // Detects a connection the network dropped without telling either end.
+    keepAlive: true,
+  });
   const strategy = new OpeningRangeBreakout();
 
   let stopping = false;
@@ -312,20 +331,37 @@ async function main(): Promise<void> {
         // things a batch job would die on.
       }
 
-      await observer.beat(status, {
-        alpacaOk,
-        marketDataOk: dataOk,
-        databaseOk: true,
-        marketOpen,
-        strategyActive: status === "running",
-        killSwitch: status === "halted",
-      });
+      // Under the watchdog as well, because these are the calls that hung the
+      // second live worker: they sit outside `cycle()`, they talk to the
+      // database, and `beat` swallowing errors does nothing for a query that
+      // never returns at all.
+      await withTimeout(
+        observer.beat(status, {
+          alpacaOk,
+          marketDataOk: dataOk,
+          databaseOk: true,
+          marketOpen,
+          strategyActive: status === "running",
+          killSwitch: status === "halted",
+        }),
+        CYCLE_TIMEOUT_MS,
+        "heartbeat",
+      ).catch((error: unknown) => say(`heartbeat: ${describe(error)}`));
 
       // Re-checked every cycle, not only at startup: a replacement that took
       // over while this process was wedged must be able to evict it if it ever
       // wakes up. Whoever beat last owns the account, and this worker has just
       // beaten, so a different id here means somebody else has taken it since.
-      const usurper = await observer.leaseHolder(LEASE_STALE_MS);
+      const usurper = await withTimeout(
+        observer.leaseHolder(LEASE_STALE_MS),
+        CYCLE_TIMEOUT_MS,
+        "lease check",
+      ).catch((error: unknown) => {
+        // A lease check that cannot complete is not evidence of a rival, so
+        // carry on rather than stopping a worker that is otherwise healthy.
+        say(`lease check: ${describe(error)}`);
+        return null;
+      });
       if (usurper) {
         await observer.say({
           level: "warn",

@@ -125,7 +125,16 @@ async function main(): Promise<void> {
     failures += 1;
     bad("DATABASE_URL_EXECUTION", "unset — see .env.example");
   } else {
-    pool = new pg.Pool({ connectionString: executionUrl, max: 2 });
+    // Same bounds as the worker: a hung query would make preflight itself hang,
+    // and a health check that can stop responding is not one.
+    pool = new pg.Pool({
+      connectionString: executionUrl,
+      max: 2,
+      connectionTimeoutMillis: 10_000,
+      query_timeout: 15_000,
+      statement_timeout: 15_000,
+      keepAlive: true,
+    });
     await check("connect as vesti_execution", async () => {
       const { rows } = await pool!.query<{ v: string }>(`SELECT version() AS v`);
       return rows[0]!.v.split(",")[0]!;
