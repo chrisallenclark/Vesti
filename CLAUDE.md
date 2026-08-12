@@ -147,9 +147,29 @@ npm test                                         # needs Postgres; no internet
 
 Unattended, everything runs in GitHub Actions: `intraday.yml` (the DAY worker
 through the session), `paper.yml` (the daily swing session after the close),
-`promote.yml` (move a strategy along the ladder), `ingest.yml`.
-`workflow_dispatch` is refused for this repository's token, so each workflow can
-also be started by committing its request file under `.github/`.
+`promote.yml` (move a strategy along the ladder), `preflight.yml` (read-only
+integration check), `ingest.yml`.
+
+**Two facts about how these actually get started, both of which are easy to
+assume wrong:**
+
+- `workflow_dispatch` is refused for this repository's token. Every workflow can
+  therefore also be started by committing its request file under `.github/`
+  (`intraday-request`, `paper-request`, `promote-request`, `preflight-request`).
+  That file trigger is the mechanism that works; the dispatch button is not.
+- **`on: schedule` only ever runs from the DEFAULT branch.** As of this writing
+  `main` is an empty initial commit with no workflows on it, so no cron in this
+  repository has ever fired — every run to date was push-triggered from a
+  feature branch. Until this work is merged to `main`, the worker does not start
+  itself and each session must be kicked off by committing a request file. Do
+  not tell the owner a schedule will pick something up without checking what is
+  actually on `main`.
+
+One consequence worth planning around: a job is capped at six hours and the
+session is six and a half, so one run cannot cover a whole day. The morning run
+hits its timeout before the strategy's 15:45 ET flatten, and a successor has to
+be queued (the shared `paper-` concurrency group starts it as the first ends) or
+an intraday position is carried overnight with gap risk nothing sized for.
 
 ## Strategy promotion
 
