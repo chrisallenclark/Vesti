@@ -1,1 +1,11 @@
-Start the DAY worker for the 2026-08-12 session.
+Queue a successor worker for the rest of today's session.
+
+The morning run hits its 340-minute job timeout at about 15:23 ET, which is
+BEFORE the strategy's 15:45 flatten. Without a successor, a position opened this
+morning would be carried overnight — a different trade, with gap risk, that
+nothing in the sizing accounted for.
+
+This run is queued behind the morning one by the shared concurrency group and
+starts as it ends. It also carries the fixes made after the morning run began:
+the working-quantity clamp that stops a second exit going out while the first is
+still working, and cause-based suppression of the scan feed.
