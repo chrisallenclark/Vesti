@@ -505,7 +505,13 @@ export class DayEngine {
 
     // ── The real risk engine, on real state ───────────────────────────────
     const account = await broker.getAccount();
-    const portfolio = await portfolioState(pool, accountId, account.cash);
+    // The signal's own symbol is marked at the price the decision references,
+    // not at the last daily close. See `portfolioState` — the engine derives
+    // sellable size as market value over the reference price, and marking the
+    // two differently makes a full exit come back fractional.
+    const portfolio = await portfolioState(pool, accountId, account.cash, {
+      [signal.symbol]: signal.referencePrice,
+    });
     const market = await marketState(pool, securityId);
 
     const held = await this.#ledger.positionForMandate(accountId, mandateId, securityId);
@@ -747,15 +753,24 @@ async function marketState(pool: pg.Pool, securityId: string): Promise<MarketSta
 /**
  * Portfolio state for the risk engine, from the ledger.
  *
- * Positions are marked at the last daily close rather than at cost: the engine
- * derives sellable size from market value over the reference price, so feeding
- * it cost basis makes an exit of a position that has moved come back fractional
- * and get refused — which would mean a stop that cannot fire.
+ * `marks` overrides the price a symbol is valued at, and exists for one
+ * specific and easily-missed reason. The engine approves a sell for
+ * `marketValue / referencePrice` shares. Valuing the position at yesterday's
+ * close while the decision references an intraday price makes that quotient
+ * something like 9.98 for a ten-share position, which floors to nine — the
+ * stop fires, sells nine, and leaves one share behind with no stop watching it.
+ * Marking the symbol under decision at exactly the price being referenced makes
+ * a full exit divide out to exactly the shares held.
+ *
+ * Everything else stays marked at the last daily close, which is what the heat
+ * cap wants: a stable valuation of the rest of the book rather than one that
+ * moves tick by tick.
  */
 async function portfolioState(
   pool: pg.Pool,
   accountId: string,
   brokerCash: number,
+  marks: Readonly<Record<string, number>> = {},
 ): Promise<PortfolioState> {
   const { rows } = await pool.query<{
     mandate_kind: MandateKind;
@@ -787,7 +802,9 @@ async function portfolioState(
   const positions = rows.map((row) => {
     const quantity = Number(row.quantity);
     const cost = Number(row.cost);
-    const marketValue = row.last_close === null ? cost : quantity * Number(row.last_close);
+    const mark =
+      marks[row.symbol] ?? (row.last_close === null ? null : Number(row.last_close));
+    const marketValue = mark === null ? cost : quantity * mark;
     mandateEquity[row.mandate_kind] += marketValue;
     const stop = row.stop === null ? null : Number(row.stop);
     return {

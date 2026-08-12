@@ -308,3 +308,213 @@ body {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   The trading desk.
+
+   Density over decoration. This page is read while something is happening, so
+   the job of every rule here is to make a number findable in under a second and
+   to make a broken component impossible to miss. Nothing animates: motion on a
+   panel that updates every three seconds is a distraction, not feedback.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.deskMain { padding: 0 var(--gutter) 96px; }
+.desk { display: flex; flex-direction: column; gap: 14px; }
+
+.desk .card {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.desk h2 {
+  font-size: 0.78rem;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.desk h2 .count {
+  font-size: 0.72rem;
+  color: var(--text-3);
+  background: var(--track);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* ── Mode, money ─────────────────────────────────────────────────────────── */
+.modeRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+
+.badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+/* Paper is the safe state and reads calm. Live would be alarming on purpose —
+   if this badge is ever red, something has gone very wrong. */
+.badge-paper { background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent); }
+.badge-live { background: var(--critical); color: #fff; border: 1px solid var(--critical); }
+
+.killBtn {
+  margin-left: auto;
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  color: var(--critical);
+  background: transparent;
+  border: 1px solid var(--critical);
+  border-radius: 8px;
+  padding: 6px 14px;
+  cursor: pointer;
+}
+.killBtn:hover:not(:disabled) { background: var(--critical); color: #fff; }
+.killBtn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.figures { display: flex; flex-wrap: wrap; gap: 22px 34px; }
+.figure { display: flex; flex-direction: column; gap: 2px; }
+.figureLabel {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.figureValue {
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.015em;
+}
+.figureValue.pos { color: var(--positive); }
+.figureValue.neg { color: var(--negative); }
+
+.stamp { font-size: 0.72rem; margin: 12px 0 0; }
+.warn { color: var(--warning); }
+.muted { color: var(--text-2); }
+
+/* ── Status ──────────────────────────────────────────────────────────────── */
+.status {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 2px 10px;
+  border-radius: 6px;
+}
+.status-ok { background: rgba(78, 154, 124, 0.16); color: var(--positive); }
+.status-wait { background: var(--track); color: var(--text-2); }
+.status-bad { background: rgba(163, 62, 56, 0.18); color: var(--critical); }
+.status-off { background: var(--track); color: var(--text-3); }
+
+.alert {
+  background: rgba(163, 62, 56, 0.12);
+  border: 1px solid var(--critical);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+  font-size: 0.85rem;
+}
+
+.lights {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 18px;
+}
+.light { display: flex; align-items: baseline; gap: 8px; font-size: 0.82rem; }
+.light .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; align-self: center; }
+.light-ok .dot { background: var(--positive); }
+.light-bad .dot { background: var(--critical); }
+.light-unknown .dot { background: var(--text-3); }
+.lightLabel { color: var(--text-2); min-width: 84px; }
+.lightValue { font-weight: 600; }
+.light-bad .lightValue { color: var(--critical); }
+.lightValue em { font-style: normal; color: var(--text-3); font-weight: 400; margin-left: 6px; }
+
+.beats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px 18px;
+  margin: 14px 0 0;
+}
+.beat dt { font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-3); }
+.beat dd { margin: 0; font-variant-numeric: tabular-nums; font-size: 0.86rem; }
+.beat dd em { font-style: normal; color: var(--text-3); margin-left: 6px; font-size: 0.78rem; }
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+/* Wide content scrolls inside its own box; the page body must never scroll
+   sideways on a phone. */
+.scroller { overflow-x: auto; }
+.desk table { width: 100%; border-collapse: collapse; font-size: 0.84rem; white-space: nowrap; }
+.desk th {
+  text-align: left;
+  font-weight: 500;
+  font-size: 0.68rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: 0 12px 6px 0;
+}
+.desk td { padding: 7px 12px 7px 0; border-top: 1px solid var(--hairline); }
+.desk th.n, .desk td.n { text-align: right; font-variant-numeric: tabular-nums; }
+.desk td.why { white-space: normal; min-width: 260px; color: var(--text-2); font-size: 0.78rem; }
+.desk .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; }
+.pos { color: var(--positive); }
+.neg { color: var(--negative); }
+
+.tag {
+  font-style: normal;
+  font-size: 0.64rem;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  background: var(--track);
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin-left: 6px;
+}
+
+/* ── The feed ────────────────────────────────────────────────────────────── */
+.feed { list-style: none; margin: 0; padding: 0; max-height: 460px; overflow-y: auto; }
+.feedItem {
+  display: grid;
+  grid-template-columns: 90px 140px 1fr;
+  gap: 10px;
+  padding: 5px 0;
+  border-top: 1px solid var(--hairline);
+  font-size: 0.82rem;
+  align-items: baseline;
+}
+.feedItem time { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: 0.76rem; }
+.feedItem .kind {
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+/* The levels that matter are pulled forward; routine scans recede. Colour is
+   never the only signal — the kind is spelled out beside it. */
+.level-debug { color: var(--text-3); }
+.level-signal .kind, .level-signal .msg { color: var(--accent); }
+.level-warn .kind, .level-warn .msg { color: var(--warning); }
+.level-error .kind, .level-error .msg { color: var(--critical); }
+
+@media (max-width: 620px) {
+  .feedItem { grid-template-columns: 76px 1fr; }
+  .feedItem .kind { grid-column: 2; }
+  .feedItem .msg { grid-column: 2; }
+}
+
+/* ── Journal ─────────────────────────────────────────────────────────────── */
+.journal { list-style: none; margin: 0; padding: 0; }
+.journal > li { padding: 10px 0; border-top: 1px solid var(--hairline); }
+.jHead { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: 0.88rem; }
+.jHead time { margin-left: auto; color: var(--text-3); font-size: 0.76rem; font-variant-numeric: tabular-nums; }
+.jBody { margin-top: 4px; font-size: 0.8rem; color: var(--text-2); }
+.jBody p { margin: 0; }
+.reasons { margin: 4px 0 0; padding-left: 18px; }
+.reasons li { margin: 1px 0; }
+
+.empty { text-align: center; padding: 32px 18px; color: var(--text-2); }

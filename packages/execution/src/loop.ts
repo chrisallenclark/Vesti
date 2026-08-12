@@ -295,7 +295,15 @@ async function actOnSignal(params: ActParams): Promise<LoopOutcome["ordersSubmit
   const last = history.at(-1);
   if (!last) throw new Error(`no bars for ${signal.symbol} as of ${asOf}`);
 
-  const portfolio = await portfolioState(pool, accountId, params.account.cash, asOf);
+  // The signal's own symbol is marked at the price the ruling references. The
+  // reference is a PIT-adjusted close and the marks below come from raw
+  // `bars_daily`, so on any symbol carrying an announced split the two disagree
+  // — and the engine sizes a sell as market value over the reference price, so
+  // the disagreement makes a full exit come back fractional and floor to fewer
+  // shares than are held. A stop that sells all but one share is not a stop.
+  const portfolio = await portfolioState(pool, accountId, params.account.cash, asOf, {
+    [signal.symbol]: last.close,
+  });
   const market: MarketState = {
     averageDollarVolume: averageDollarVolume(history),
     spreadFraction: 0.0005,
@@ -592,6 +600,8 @@ async function portfolioState(
   accountId: string,
   brokerCash: number,
   asOf: string,
+  /** Overrides the price a symbol is valued at. See the call site. */
+  marks: Readonly<Record<string, number>> = {},
 ): Promise<PortfolioState> {
   const { rows } = await pool.query<{
     mandate_kind: MandateKind;
@@ -626,7 +636,8 @@ async function portfolioState(
     // Market value, not cost. The engine derives sellable size from market
     // value over the reference price, so cost basis here makes an exit of a
     // position whose price has moved come back fractional and get refused.
-    const marketValue = row.close === null ? cost : quantity * Number(row.close);
+    const mark = marks[row.symbol] ?? (row.close === null ? null : Number(row.close));
+    const marketValue = mark === null ? cost : quantity * mark;
     mandateEquity[row.mandate_kind] += marketValue;
     const stop = row.stop === null ? null : Number(row.stop);
     return {

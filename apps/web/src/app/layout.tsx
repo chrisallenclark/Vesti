@@ -19,11 +19,8 @@ export const viewport: Viewport = {
 };
 
 const TABS = [
-  { href: "/", label: "Today", icon: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4l2.5 2" strokeLinecap="round" /></> },
-  { href: "/desk", label: "Desk", icon: <path d="M3 15V9M7.5 15V5M12 15v-4M16.5 15V7" strokeLinecap="round" /> },
+  { href: "/", label: "Desk", icon: <path d="M3 15V9M7.5 15V5M12 15v-4M16.5 15V7" strokeLinecap="round" /> },
   { href: "/portfolio", label: "Portfolio", icon: <><circle cx="10" cy="10" r="7" /><path d="M10 3v7h7" strokeLinecap="round" /></> },
-  { href: "/research", label: "Research", icon: <><circle cx="9" cy="9" r="5.5" /><path d="M13 13l4 4" strokeLinecap="round" /></> },
-  { href: "/learn", label: "Learn", icon: <path d="M4 5.5h5a2 2 0 012 2V16a2 2 0 00-2-2H4zM16 5.5h-5a2 2 0 00-2 2V16a2 2 0 012-2h5z" strokeLinejoin="round" /> },
 ] as const;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
