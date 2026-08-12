@@ -30,6 +30,13 @@ on:
         required: false
         default: false
 
+  # A second way in, for anyone who can push but cannot press the button:
+  # pushing a tag named `run-ingest-<anything>` starts a run with the defaults.
+  # Scoped to that prefix so ordinary tags — releases, checkpoints — do not
+  # quietly rewrite the database.
+  push:
+    tags: ["run-ingest-*"]
+
 concurrency:
   # Two runs writing the same database would interleave their migrations.
   group: ingest-${{ github.repository }}
@@ -72,7 +79,8 @@ jobs:
 
       - name: Ingest prices and corporate actions
         if: ${{ inputs.skip_market_data != true }}
-        run: npm run ingest -w @vesti/ingest -- sync --universe starter --from ${{ inputs.from }}
+        # `inputs` is empty on a tag push, so the default lives here too.
+        run: npm run ingest -w @vesti/ingest -- sync --universe starter --from ${{ inputs.from || '2016-01-01' }}
 
       - name: Ingest EDGAR fundamentals
         # Fundamentals attach to securities that bars create, so this is only
