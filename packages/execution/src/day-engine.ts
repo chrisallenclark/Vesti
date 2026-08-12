@@ -333,7 +333,27 @@ export class DayEngine {
     return posted;
   }
 
+  /**
+   * Narrates a fill into the feed.
+   *
+   * Called fire-and-forget from the poller's callback, which is why the whole
+   * body is guarded: an unhandled rejection out of a floating promise takes the
+   * Node process down by default, and losing the worker because a narration
+   * query failed would be the observability layer killing the thing it exists
+   * to observe.
+   */
   async #announceFill(
+    orderId: string,
+    result: { filledQuantity: number; lotOpened: string | null; realizedPnl: number },
+  ): Promise<void> {
+    try {
+      await this.#narrateFill(orderId, result);
+    } catch (error) {
+      this.options.observer.markError(error);
+    }
+  }
+
+  async #narrateFill(
     orderId: string,
     result: { filledQuantity: number; lotOpened: string | null; realizedPnl: number },
   ): Promise<void> {

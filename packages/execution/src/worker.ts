@@ -106,6 +106,25 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => stop("SIGINT"));
   process.on("SIGTERM", () => stop("SIGTERM"));
 
+  /**
+   * A stray rejection must not end the session.
+   *
+   * Node's default for an unhandled rejection is to terminate, which for a
+   * process that is supposed to run for six hours means one incidental failure
+   * — a narration query, a socket closing during a write — silently ends the
+   * trading day. Every deliberate path here already handles its own errors; this
+   * catches the ones nobody thought of, and logs them rather than swallowing
+   * them, because a worker that hides its faults is worse than one that dies.
+   *
+   * Note what this does NOT do: it does not make the loop keep trading through a
+   * broken cycle. `cycle()` failing is caught below and reported as `error`
+   * status, which the dashboard shows. This only stops the process from being
+   * killed by something outside that path.
+   */
+  process.on("unhandledRejection", (reason) => {
+    say(`unhandled rejection (continuing): ${describe(reason)}`);
+  });
+
   let observer: Observer | undefined;
 
   try {
