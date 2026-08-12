@@ -646,6 +646,27 @@ describe("the DAY engine, end to end", () => {
     assert.equal(rows.length, 0);
   });
 
+  it("suppresses on the cause, not on the wording, as prices move", async () => {
+    // Same rule declining every time, but the message carries a live price that
+    // changes on every bar. De-duplicating on the text would write a row per
+    // bar; on the cause it writes one.
+    const engine = engineFor();
+    for (let i = 0; i < 3; i += 1) {
+      const flat: IntradayBarRow[] = [];
+      for (let j = 0; j < 32; j += 1) flat.push(bar(j));
+      // Each cycle sees a different last close — still under the range high.
+      flat.push(bar(32 + i, { close: 100.1 + i * 0.05, high: 100.2, low: 100 }));
+      data.bars = new Map([[symbol, flat]]);
+      await engine.cycle(AT_ELEVEN);
+    }
+
+    const { rows } = await pool.query<{ count: string }>(
+      `SELECT count(*) FROM activity_log WHERE account_id = $1 AND kind = 'scan'`,
+      [accountId],
+    );
+    assert.equal(Number(rows[0]!.count), 1, "one cause, one entry, whatever the price did");
+  });
+
   it("records the reason a symbol was passed over, once per change of reason", async () => {
     // Flat bars all session: a valid range, no breakout.
     const flat: IntradayBarRow[] = [];
@@ -657,11 +678,12 @@ describe("the DAY engine, end to end", () => {
     await engine.cycle(AT_ELEVEN);
     await engine.cycle(AT_ELEVEN);
 
-    const { rows } = await pool.query<{ message: string }>(
-      `SELECT message FROM activity_log WHERE account_id = $1 AND kind = 'scan'`,
+    const { rows } = await pool.query<{ message: string; detail: { code?: string } }>(
+      `SELECT message, detail FROM activity_log WHERE account_id = $1 AND kind = 'scan'`,
       [accountId],
     );
     assert.equal(rows.length, 1, "three identical scans are one feed entry");
     assert.match(rows[0]!.message, /has not closed above the range high/);
+    assert.equal(rows[0]!.detail.code, "no_breakout");
   });
 });

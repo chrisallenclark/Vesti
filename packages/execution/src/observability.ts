@@ -70,7 +70,7 @@ export class Observer {
   #lastError: { message: string; at: Date } | null = null;
 
   /**
-   * The last reason each symbol was passed over.
+   * The last CAUSE each symbol was passed over for.
    *
    * Held in memory purely to suppress repetition. Seventeen symbols evaluated
    * every thirty seconds for six and a half hours is thirteen thousand rows
@@ -133,15 +133,29 @@ export class Observer {
   }
 
   /**
-   * Records a symbol being passed over, once per change of reason.
+   * Records a symbol being passed over, once per change of CAUSE.
+   *
+   * Keyed on `code` rather than on the message, because the message carries live
+   * prices and ratios that change on every bar: "0.91x average volume" and
+   * "0.93x average volume" are the same fact told twice, and de-duplicating on
+   * the text would write a row per symbol per minute — six thousand a session,
+   * which is not observability. Keyed on the cause, the feed becomes a record of
+   * when the market's story about a name changed, and the row that is written
+   * still carries the live numbers.
    *
    * Returns whether anything was written, so a caller can count how much of a
    * scan was genuinely new.
    */
-  async pass(symbol: string, reason: string): Promise<boolean> {
-    if (this.#lastPassReason.get(symbol) === reason) return false;
-    this.#lastPassReason.set(symbol, reason);
-    await this.say({ level: "debug", kind: "scan", symbol, message: `no trade — ${reason}` });
+  async pass(symbol: string, code: string, reason: string): Promise<boolean> {
+    if (this.#lastPassReason.get(symbol) === code) return false;
+    this.#lastPassReason.set(symbol, code);
+    await this.say({
+      level: "debug",
+      kind: "scan",
+      symbol,
+      message: `no trade — ${reason}`,
+      detail: { code },
+    });
     return true;
   }
 

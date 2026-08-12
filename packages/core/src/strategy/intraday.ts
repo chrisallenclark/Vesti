@@ -114,6 +114,18 @@ export type IntradaySignal = IntradayEntry | IntradayExit;
  */
 export interface IntradayPass {
   symbol: string;
+  /**
+   * Stable key for WHICH rule declined, with no numbers in it.
+   *
+   * Separate from `reason` because the reason contains live prices and ratios
+   * that change on every bar, which makes it useless as a de-duplication key:
+   * "breakout on 0.91x average volume" and "breakout on 0.93x average volume"
+   * are the same fact told twice. Suppressing on the code turns the feed into a
+   * record of when the market's STORY about a symbol changed, which is the part
+   * worth reading; suppressing on the reason would write seventeen rows a minute
+   * and be read by nobody.
+   */
+  code: string;
   reason: string;
 }
 

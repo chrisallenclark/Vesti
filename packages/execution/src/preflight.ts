@@ -196,7 +196,7 @@ async function main(): Promise<void> {
     say(`    ${withBars}/${universe.length} symbol(s) with bars, newest ${newest}`);
     say("");
     for (const pass of evaluation.passes.slice(0, 25)) {
-      say(`      ${pass.symbol.padEnd(6)} no trade — ${pass.reason}`);
+      say(`      ${pass.symbol.padEnd(6)} no trade — ${pass.reason}  [${pass.code}]`);
     }
     for (const signal of evaluation.signals) {
       if (signal.kind !== "entry") continue;

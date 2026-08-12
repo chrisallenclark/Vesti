@@ -174,7 +174,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (!last) {
         // No data for something we are holding is a reason to say so loudly,
         // not a reason to conclude there is nothing to do.
-        passes.push({ symbol: position.symbol, reason: "held but no bars this session" });
+        passes.push({ symbol: position.symbol, code: "no_bars", reason: "held but no bars this session" });
         continue;
       }
 
@@ -228,12 +228,17 @@ export class OpeningRangeBreakout implements IntradayStrategy {
     for (const [symbol, bars] of context.bars) {
       if (held.has(symbol)) continue;
       if (context.tradedToday.has(symbol)) {
-        passes.push({ symbol, reason: "already traded today — one shot per symbol per session" });
+        passes.push({
+          symbol,
+          code: "already_traded",
+          reason: "already traded today — one shot per symbol per session",
+        });
         continue;
       }
       if (bars.length < this.config.openingRangeMinutes) {
         passes.push({
           symbol,
+          code: "warming_up",
           reason: `${bars.length} bar(s) this session, needs ${this.config.openingRangeMinutes}`,
         });
         continue;
@@ -241,7 +246,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
 
       const range = openingRange(bars, context.sessionDate, this.config.openingRangeMinutes);
       if (!range) {
-        passes.push({ symbol, reason: "no complete opening range" });
+        passes.push({ symbol, code: "no_opening_range", reason: "no complete opening range" });
         continue;
       }
 
@@ -252,6 +257,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (rangeFraction < this.config.minRangeFraction) {
         passes.push({
           symbol,
+          code: "range_too_tight",
           reason: `opening range ${(rangeFraction * 100).toFixed(2)}% is too tight to be a level`,
         });
         continue;
@@ -259,6 +265,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (rangeFraction > this.config.maxRangeFraction) {
         passes.push({
           symbol,
+          code: "range_is_a_gap",
           reason: `opening range ${(rangeFraction * 100).toFixed(2)}% is a gap, not a range`,
         });
         continue;
@@ -267,6 +274,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (last.close <= range.high) {
         passes.push({
           symbol,
+          code: "no_breakout",
           reason: `${last.close.toFixed(2)} has not closed above the range high ${range.high.toFixed(2)}`,
         });
         continue;
@@ -274,12 +282,17 @@ export class OpeningRangeBreakout implements IntradayStrategy {
 
       const vwap = sessionVwap(bars);
       if (vwap === null) {
-        passes.push({ symbol, reason: "no volume this session — cannot compute VWAP" });
+        passes.push({
+          symbol,
+          code: "no_volume",
+          reason: "no volume this session — cannot compute VWAP",
+        });
         continue;
       }
       if (last.close <= vwap) {
         passes.push({
           symbol,
+          code: "below_vwap",
           reason: `broke out at ${last.close.toFixed(2)} but is below VWAP ${vwap.toFixed(2)}`,
         });
         continue;
@@ -290,6 +303,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (volumeRatio < this.config.volumeMultiple) {
         passes.push({
           symbol,
+          code: "thin_volume",
           reason:
             `breakout on ${volumeRatio.toFixed(2)}x average volume, ` +
             `needs ${this.config.volumeMultiple}x`,
@@ -301,6 +315,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       if (extension > this.config.maxExtensionMultiple) {
         passes.push({
           symbol,
+          code: "too_extended",
           reason:
             `already ${extension.toFixed(2)}x the range above the high — ` +
             `too extended to enter`,
@@ -311,7 +326,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
       const stopPrice = round2(range.high - this.config.stopFractionOfRange * width);
       const risk = last.close - stopPrice;
       if (!(risk > 0)) {
-        passes.push({ symbol, reason: "stop is not below the entry price" });
+        passes.push({ symbol, code: "bad_stop", reason: "stop is not below the entry price" });
         continue;
       }
       const targetPrice = round2(last.close + this.config.targetR * risk);
@@ -365,6 +380,7 @@ export class OpeningRangeBreakout implements IntradayStrategy {
     for (const candidate of candidates.slice(Math.max(0, room))) {
       passes.push({
         symbol: candidate.symbol,
+        code: "lost_the_slot",
         reason: "qualified, but a stronger breakout took this cycle's slot",
       });
     }

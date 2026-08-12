@@ -226,7 +226,7 @@ export class DayEngine {
     outcome.signals = evaluation.signals.length;
 
     for (const pass of evaluation.passes) {
-      await observer.pass(pass.symbol, pass.reason);
+      await observer.pass(pass.symbol, pass.code, pass.reason);
     }
 
     // ── 6. Decide, check, submit ──────────────────────────────────────────
