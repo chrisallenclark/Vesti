@@ -9,6 +9,6 @@
     "./*": "./src/*"
   },
   "scripts": {
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --env-file-if-exists=../../.env --test src/**/*.test.ts"
   }
 }

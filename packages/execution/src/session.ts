@@ -18,8 +18,10 @@
  */
 
 import pg from "pg";
+import { OpeningRangeBreakout } from "@vesti/core/strategy/opening-range.ts";
 import { TrendPullback } from "@vesti/core/strategy/trend-pullback.ts";
 import type { Strategy, StrategyStatus } from "@vesti/core/strategy/types.ts";
+import type { RegistrableStrategy } from "./strategy-registry.ts";
 import { AlpacaBroker, ALPACA_PAPER_URL } from "./alpaca.ts";
 import { allocateByTargetWeight, capitalPosition, recordDeposit } from "./capital.ts";
 import { equityCurve } from "./equity.ts";
@@ -28,12 +30,27 @@ import { runSession } from "./loop.ts";
 import { currentStanding, promoteStrategy, registerStrategy } from "./strategy-registry.ts";
 
 /**
- * Every strategy the loop may consider.
+ * Every strategy the DAILY loop may consider.
  *
  * Registered in code so the rules are reviewable; whether any of them is
  * allowed to trade is a database state nobody can change by editing this list.
  */
 const REGISTRY: readonly Strategy[] = [new TrendPullback()];
+
+/**
+ * Strategies that belong to a worker rather than to this loop.
+ *
+ * They climb the same promotion ladder and are administered by the same
+ * commands — `--register`, `--promote`, `--status` — because a second promotion
+ * mechanism per engine is a second place for a strategy to be trading when
+ * nobody thinks it is. What they do NOT do is run here: `runSession` evaluates
+ * daily bars once after the close, and an intraday rule set fed that context
+ * would either do nothing or do something meaningless.
+ */
+const WORKER_REGISTRY: readonly RegistrableStrategy[] = [new OpeningRangeBreakout()];
+
+/** Everything registerable, whatever runs it. */
+const ALL_STRATEGIES: readonly RegistrableStrategy[] = [...REGISTRY, ...WORKER_REGISTRY];
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -157,7 +174,7 @@ async function main(): Promise<void> {
     if (flag("register")) {
       const registry = registryPool();
       try {
-        for (const strategy of REGISTRY) {
+        for (const strategy of ALL_STRATEGIES) {
           const registered = await registerStrategy(registry, {
             userId: account.user_id,
             strategy,
@@ -181,7 +198,7 @@ async function main(): Promise<void> {
       if (!slug || !to || !why) {
         throw new Error(`Usage: --promote <slug> --to <status> --why "<rationale>"`);
       }
-      const strategy = REGISTRY.find((s) => s.key === slug);
+      const strategy = ALL_STRATEGIES.find((s) => s.key === slug);
       if (!strategy) throw new Error(`No strategy "${slug}" in the code registry.`);
 
       const registry = registryPool();
@@ -225,7 +242,7 @@ async function main(): Promise<void> {
         );
       }
       say("\nstrategies");
-      for (const strategy of REGISTRY) {
+      for (const strategy of ALL_STRATEGIES) {
         const { rows } = await pool.query<{ id: string }>(
           `SELECT id FROM strategies WHERE user_id = $1 AND slug = $2`,
           [account.user_id, strategy.key],

@@ -6,7 +6,7 @@
   "main": "./src/index.ts",
   "scripts": {
     "backtest": "tsx --env-file-if-exists=../../.env src/cli.ts",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --env-file-if-exists=../../.env --test src/*.test.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

@@ -7,7 +7,7 @@
   "scripts": {
     "ingest": "tsx --env-file-if-exists=../../.env src/cli.ts",
     "bars": "tsx --env-file-if-exists=../../.env src/cli.ts bars",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --env-file-if-exists=../../.env --test src/*.test.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

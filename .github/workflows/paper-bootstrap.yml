@@ -84,6 +84,21 @@ jobs:
             --promote active.trend_pullback --to paper_approved \
             --why "Operator decision to run on paper only, for order flow through the ledger, gate, reconciliation and equity curve. Any P&L from this is not evidence of edge and must not be read as one."
 
+      # The DAY engine's rule set climbs the same ladder, one rung at a time.
+      # Separate steps from the daily strategy's because the rationale is
+      # different and the record is the rationale.
+      - name: Promote the DAY strategy to validating
+        run: |
+          npm run session -w @vesti/execution -- \
+            --promote day.opening_range_breakout --to validating \
+            --why "Promoted to exercise the intraday autonomous worker against a live venue. Not a validated edge: no backtest, no walk-forward, no regime stratification exists yet (Phase 4)."
+
+      - name: Promote the DAY strategy to paper_approved
+        run: |
+          npm run session -w @vesti/execution -- \
+            --promote day.opening_range_breakout --to paper_approved \
+            --why "Operator decision to run the DAY engine on paper only, for intraday order flow through the ledger, gate, reconciliation and equity curve. Any P&L from this is not evidence of edge and must not be read as one."
+
       - name: What the loop would do now
         if: always()
         run: npm run session -w @vesti/execution -- --status

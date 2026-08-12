@@ -1,0 +1,104 @@
+# The DAY engine, running through a live session.
+#
+# This is the workflow that makes the loop watchable: a long-lived process that
+# scans real market data every few seconds, decides, is checked by the risk
+# engine, submits PAPER orders and takes the fills back — while somebody has the
+# dashboard open.
+#
+# WHY A LONG JOB RATHER THAN A FREQUENT CRON. GitHub's scheduler has a
+# five-minute floor and is explicitly best-effort about it; runs are routinely
+# late by more than that under load. An intraday strategy whose rules are about
+# minutes cannot be expressed by a scheduler with that jitter, and a "cron every
+# five minutes" version would also pay npm install and a cold connection on
+# every single evaluation. One process that stays up costs less and decides on
+# time.
+#
+# WHY TWO SCHEDULED STARTS. A job is capped at six hours; the session is six and
+# a half. The first start covers the morning, the second is queued behind it by
+# the concurrency group and picks up the afternoon. Neither needs to know which
+# it is: the worker re-derives everything from the database and the broker on
+# its first cycle, so the handover costs one cycle and nothing else.
+#
+# 13:25 UTC is 09:25 ET under EDT and 08:25 under EST. Cron here is UTC and does
+# not follow daylight saving, so from November the worker starts an hour early
+# and sits `idle` until the venue's own clock reports the market open — which is
+# the correct behaviour and needs no seasonal edit. `--until` is US/Eastern and
+# does follow it.
+name: Paper trading — intraday DAY worker
+
+on:
+  schedule:
+    - cron: "25 13 * * 1-5" # morning session
+    - cron: "0 19 * * 1-5" # afternoon session, queued behind the morning one
+  workflow_dispatch:
+    inputs:
+      until:
+        description: "Stop at this US/Eastern time (HH:MM)"
+        required: false
+        default: "15:55"
+      interval:
+        description: "Seconds between cycles"
+        required: false
+        default: "20"
+      dry_run:
+        description: "Decide everything, submit nothing"
+        type: boolean
+        required: false
+        default: false
+  push:
+    paths: [".github/intraday-request"]
+
+concurrency:
+  # Shared with the bootstrap and the daily session: only one thing may be
+  # trading this account at a time. Never cancel-in-progress — cancelling a
+  # worker mid-cycle is how an order gets submitted and its fill never posted.
+  group: paper-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    # Five hours forty: long enough for the morning, short enough to stay inside
+    # the six-hour ceiling with room for setup.
+    timeout-minutes: 340
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      # Belt and braces. The worker refuses to start unless this says PAPER and
+      # the trading URL is the paper host and the account row says is_live=false.
+      TRADING_MODE: PAPER
+      ALPACA_TRADING_BASE_URL: https://paper-api.alpaca.markets
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      # Registration is idempotent and lands at `experimental`; it never resets
+      # a strategy that has already been promoted. Running it here means a new
+      # rule set is always present in the registry before the worker asks
+      # whether it may trade.
+      - name: Register strategies
+        run: npm run session -w @vesti/execution -- --register
+
+      - name: What the worker is about to do
+        run: npm run session -w @vesti/execution -- --status
+
+      - name: Run the DAY worker
+        run: |
+          npm run worker -w @vesti/execution -- \
+            --until "${{ inputs.until || '15:55' }}" \
+            --interval "${{ inputs.interval || '20' }}" \
+            ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      - name: Standing after the session
+        if: always()
+        run: npm run session -w @vesti/execution -- --status

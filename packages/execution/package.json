@@ -9,9 +9,10 @@
     "./*": "./src/*"
   },
   "scripts": {
-    "test": "tsx --test src/*.test.ts",
+    "test": "tsx --env-file-if-exists=../../.env --test src/*.test.ts",
     "paper": "tsx --env-file-if-exists=../../.env src/paper.ts",
-    "session": "tsx --env-file-if-exists=../../.env src/session.ts"
+    "session": "tsx --env-file-if-exists=../../.env src/session.ts",
+    "worker": "tsx --env-file-if-exists=../../.env src/worker.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

@@ -8,7 +8,7 @@
     "migrate": "tsx --env-file-if-exists=../../.env src/migrate.ts up",
     "reset": "tsx --env-file-if-exists=../../.env src/migrate.ts reset",
     "status": "tsx --env-file-if-exists=../../.env src/migrate.ts status",
-    "test": "tsx --test src/*.test.ts"
+    "test": "tsx --env-file-if-exists=../../.env --test src/*.test.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"

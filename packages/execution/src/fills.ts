@@ -30,7 +30,7 @@
  */
 
 import type { BrokerOrderState } from "@vesti/core/broker/types.ts";
-import type { OrderLedger, PostedFill } from "./ledger.ts";
+import type { LotPlan, OrderLedger, PostedFill } from "./ledger.ts";
 import type { LotMethod } from "./lots.ts";
 
 /**
@@ -47,9 +47,34 @@ export interface FillPollingBroker {
 export interface FillSourceOptions {
   /** Which lots exits consume. */
   method?: LotMethod;
+  /**
+   * The plan to stamp on the lot a buy opens, looked up by our order id.
+   *
+   * Needed because a fill arriving here is separated in time from the decision
+   * that caused it — possibly by a process restart — so the stop and target
+   * cannot be carried along in memory. Without this the poller opens lots with
+   * no stop recorded, and a lot with no stop contributes exposure but no open
+   * risk to the risk engine's heat cap: the account would read as safer exactly
+   * as it filled up with unprotected positions.
+   *
+   * Returning undefined is fine and means "no plan for this order".
+   */
+  lotPlanFor?: (orderId: string) => Promise<LotPlan | undefined> | LotPlan | undefined;
   /** Called for every fill actually applied, and for duplicates that were not. */
   onFill?: (event: { orderId: string; posted: PostedFill }) => void;
   onError?: (error: unknown) => void;
+}
+
+/** Resolves the per-order options a posting needs, given the source's options. */
+async function postOptionsFor(
+  options: FillSourceOptions,
+  orderId: string,
+): Promise<{ method?: LotMethod; lotPlan?: LotPlan }> {
+  const lotPlan = await options.lotPlanFor?.(orderId);
+  return {
+    ...(options.method ? { method: options.method } : {}),
+    ...(lotPlan ? { lotPlan } : {}),
+  };
 }
 
 /**
@@ -86,7 +111,7 @@ export async function pollFills(
           cumulativeAveragePrice: state.averageFillPrice ?? 0,
           filledAt: new Date(),
         },
-        options.method ? { method: options.method } : {},
+        await postOptionsFor(options, orderId),
       );
       if (result.applied) posted.push(result);
       options.onFill?.({ orderId, posted: result });
@@ -213,7 +238,7 @@ export function streamFills(
             filledAt: update.timestamp ? new Date(update.timestamp) : new Date(),
             ...(update.execution_id ? { executionId: update.execution_id } : {}),
           },
-          options.method ? { method: options.method } : {},
+          await postOptionsFor(options, update.order.client_order_id),
         );
         options.onFill?.({ orderId: update.order.client_order_id, posted });
       } catch (error) {

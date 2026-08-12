@@ -69,3 +69,19 @@ export {
   recordDeposit,
   type CapitalPosition,
 } from "./capital.ts";
+
+export { DayEngine, strategyStanding, type CycleOutcome, type DayEngineOptions } from "./day-engine.ts";
+export {
+  IntradayMarketData,
+  sessionOpenInstant,
+  type IntradayBarRow,
+  type MarketClock,
+} from "./market-data.ts";
+export {
+  Observer,
+  describe,
+  type Activity,
+  type ActivityLevel,
+  type HealthFlags,
+  type WorkerStatus,
+} from "./observability.ts";

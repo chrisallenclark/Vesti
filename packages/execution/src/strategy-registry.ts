@@ -38,6 +38,17 @@ const MANUALLY_REACHABLE: ReadonlySet<StrategyStatus> = new Set([
   "retired",
 ]);
 
+/**
+ * The part of a strategy the registry actually needs.
+ *
+ * Structural rather than the daily `Strategy` interface, because the registry
+ * records identity and standing and has no opinion about how a rule set
+ * decides. The DAY engine's intraday strategies climb the same ladder as the
+ * daily ones and must not need a second one — a promotion mechanism that
+ * differs per engine is a promotion mechanism with a hole in it.
+ */
+export type RegistrableStrategy = Pick<Strategy, "key" | "version" | "mandate" | "describe">;
+
 export interface RegisteredStrategy {
   strategyId: string;
   slug: string;
@@ -55,7 +66,7 @@ export interface RegisteredStrategy {
  */
 export async function registerStrategy(
   pool: pg.Pool,
-  params: { userId: string; strategy: Strategy },
+  params: { userId: string; strategy: RegistrableStrategy },
 ): Promise<RegisteredStrategy> {
   const { strategy } = params;
 

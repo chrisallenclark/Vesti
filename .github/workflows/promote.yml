@@ -1,0 +1,72 @@
+# Move one strategy one rung on the promotion ladder.
+#
+# Separate from the bootstrap because the bootstrap contains steps that must
+# happen exactly once — `--deposit` records an external transfer, and running it
+# twice would assert capital that was never transferred and make every position
+# size after it wrong. Promoting a strategy has no such hazard and is something
+# an operator does repeatedly, so it gets its own entry point rather than being
+# reachable only by re-running something dangerous.
+#
+# The ladder still only moves one rung per call, and a rationale is still
+# required. That is the point of the ladder: the record of why a rule set was
+# allowed to trade is written at the moment it is allowed, by whoever allowed
+# it, and cannot be reconstructed afterwards.
+name: Strategy — promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      slug:
+        description: "Strategy slug, e.g. day.opening_range_breakout"
+        required: true
+      to:
+        description: "Rung to move to"
+        required: true
+        type: choice
+        options: [validating, paper_approved, paused, retired]
+        default: validating
+      why:
+        description: "Rationale. Recorded permanently against the promotion."
+        required: true
+
+concurrency:
+  group: paper-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+      TRADING_MODE: PAPER
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      # Idempotent, and lands at `experimental` only for rule sets that are not
+      # already registered — it never resets one that has been promoted.
+      - name: Register strategies
+        run: npm run session -w @vesti/execution -- --register
+
+      - name: Promote
+        run: |
+          npm run session -w @vesti/execution -- \
+            --promote "${{ inputs.slug }}" \
+            --to "${{ inputs.to }}" \
+            --why "${{ inputs.why }}"
+
+      - name: Standing
+        if: always()
+        run: npm run session -w @vesti/execution -- --status
