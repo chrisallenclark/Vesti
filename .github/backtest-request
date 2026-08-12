@@ -1,0 +1,5 @@
+# Editing this file runs the backtest and republishes the report.
+# Safe to repeat: the backtest reads only, and the site is rebuilt from scratch
+# each time rather than committed.
+
+run: 1 — first published backtest

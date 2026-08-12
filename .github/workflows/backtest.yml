@@ -1,0 +1,86 @@
+# Runs the backtest and publishes the report to GitHub Pages.
+#
+# The report is regenerated from the run that produced it, in the same job, so
+# the page and the numbers cannot drift apart. Nothing is committed: the site is
+# an artifact of the run, and a checked-in report would eventually be a stale
+# one somebody trusted.
+#
+# Weekly rather than daily. A backtest over a fixed window barely moves when one
+# session is appended, and re-running it every evening would invite reading
+# noise as change.
+name: Backtest
+
+on:
+  schedule:
+    - cron: "0 12 * * 6"
+  workflow_dispatch:
+    inputs:
+      from:
+        description: "Start of the window"
+        required: false
+        default: "2016-01-04"
+      to:
+        description: "End of the window. Defaults to today."
+        required: false
+      cash:
+        description: "Starting capital"
+        required: false
+        default: "100000"
+  push:
+    paths: [".github/backtest-request"]
+
+concurrency:
+  group: backtest-${{ github.repository }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      # Writes .env, including DATABASE_URL_BACKTEST — the role with no table
+      # grants at all, which can reach data only through the PIT functions.
+      - name: Configure
+        run: npm run setup -- --no-ingest < /dev/null
+
+      - name: Run the backtest
+        run: |
+          npm run backtest -w @vesti/lab -- \
+            --from "${{ inputs.from || '2016-01-04' }}" \
+            ${{ inputs.to && format('--to {0}', inputs.to) || '' }} \
+            --cash "${{ inputs.cash || '100000' }}" \
+            --json "$GITHUB_WORKSPACE/backtest.json" \
+            | tee "$GITHUB_STEP_SUMMARY"
+
+      - name: Render the report
+        run: |
+          mkdir -p site
+          npm run report -- "$GITHUB_WORKSPACE/backtest.json" site/index.html
+          cp "$GITHUB_WORKSPACE/backtest.json" site/backtest.json
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4
