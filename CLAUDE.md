@@ -132,6 +132,18 @@ first live run did, freezing at twelve cycles with the job still green. Every
 outbound request carries a timeout, and the cycle itself has a watchdog. Any new
 call that leaves the process needs the same, or it reintroduces the failure.
 
+## Talking to the owner
+
+The owner is not a developer and does not live in a terminal. Every instruction
+must say **where** it happens, not just what to type: which website, which
+button, which folder, which app. "Run `npm run setup`" is not an instruction —
+"in Terminal on your Mac, in the Vesti folder, type this" is.
+
+Prefer a path that needs no terminal at all where one exists (a GitHub Actions
+run triggered by committing a request file, a setting in a hosting dashboard).
+When a terminal is genuinely unavoidable, say so plainly, say it is needed once,
+and give the exact location.
+
 ## Do not over-engineer
 
 Prefer simple over clever, working over abstract, observable over magical,
