@@ -32,9 +32,11 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import type { BrokerOrderRequest, BrokerOrderState } from "@vesti/core/broker/types.ts";
 import { OpeningRangeBreakout } from "@vesti/core/strategy/opening-range.ts";
+import { easternClock } from "@vesti/core/strategy/intraday.ts";
 import { DayEngine } from "./day-engine.ts";
 import type { BrokerPortfolio } from "./alpaca.ts";
 import { tripKillSwitch } from "./killswitch.ts";
+import { sessionOpenInstant } from "./market-data.ts";
 import type { IntradayBarRow, MarketClock } from "./market-data.ts";
 import { Observer } from "./observability.ts";
 
@@ -47,9 +49,19 @@ const testUrl = new URL(ADMIN_URL);
 testUrl.pathname = `/${TEST_DB}`;
 const TEST_URL = testUrl.toString();
 
-/** 2026-08-12 is a Wednesday under EDT: 09:30 ET is 13:30Z. */
-const SESSION = "2026-08-12";
-const AT_ELEVEN = new Date(`${SESSION}T15:00:00Z`); // 11:00 ET
+/**
+ * TODAY, in US/Eastern — not a date written into the file.
+ *
+ * The engine counts what it has already traded today by comparing an order's
+ * `created_at` against the session date, and `created_at` is the real clock
+ * whatever the test pretends the time is. A hard-coded date therefore passes on
+ * exactly one calendar day and then reports a duplicate-order bug that is not
+ * there. It did, the following afternoon.
+ */
+const SESSION = easternClock(new Date()).sessionDate;
+const SESSION_OPEN_MS = Date.parse(sessionOpenInstant(SESSION));
+/** 11:00 ET, whichever side of daylight saving this session falls on. */
+const AT_ELEVEN = new Date(SESSION_OPEN_MS + 90 * 60_000);
 
 let admin: pg.Client;
 let pool: pg.Pool;
@@ -188,20 +200,17 @@ class StubData {
     return {
       isOpen: this.isOpen,
       timestamp: AT_ELEVEN.toISOString(),
-      nextOpen: `${SESSION}T13:30:00Z`,
-      nextClose: `${SESSION}T20:00:00Z`,
+      nextOpen: new Date(SESSION_OPEN_MS).toISOString(),
+      nextClose: new Date(SESSION_OPEN_MS + 390 * 60_000).toISOString(),
     };
   }
 }
 
-/** A bar at `minute` minutes past 09:30 ET, EDT. */
+/** A bar at `minute` minutes past the 09:30 ET open, on whichever offset applies. */
 function bar(minute: number, overrides: Partial<IntradayBarRow> = {}): IntradayBarRow {
-  const total = 13 * 60 + 30 + minute;
-  const hh = String(Math.floor(total / 60)).padStart(2, "0");
-  const mm = String(total % 60).padStart(2, "0");
   return {
     symbol,
-    ts: `${SESSION}T${hh}:${mm}:00Z`,
+    ts: new Date(SESSION_OPEN_MS + minute * 60_000).toISOString(),
     open: 100,
     high: 100.5,
     low: 99.5,
