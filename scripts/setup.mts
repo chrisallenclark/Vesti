@@ -24,7 +24,7 @@
  * Idempotent. Run it again after rotating a credential and it repairs the rest.
  */
 import { createInterface } from "node:readline/promises";
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFile, writeFile, access } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -161,6 +161,31 @@ export function roleUrl(owner: URL, role: Role, password: string): string {
 
 /** Alphanumeric only: these travel through URLs, SQL literals and shells. */
 export const generatePassword = (): string => randomBytes(24).toString("base64url").replace(/[_-]/g, "");
+
+/**
+ * The role password for this database and this role, derived rather than rolled.
+ *
+ * Random passwords were fine while setup only ever ran on a laptop, where `.env`
+ * persists and step 2 below keeps what it finds. On a CI runner `.env` does not
+ * exist, so every run invented four new passwords and ALTERed the roles to
+ * match — which is invisible until something OUTSIDE the runner holds one of
+ * those URLs. A dashboard deployed with the app role's connection string keeps
+ * working until the next session starts, and then reports that the password is
+ * wrong, having changed nothing itself.
+ *
+ * Deriving from the owner URL makes every run agree without anything having to
+ * be stored or passed around. It gives away nothing: whoever holds the owner
+ * URL is already the superuser and can set these passwords to whatever they
+ * like. And it stays compatible — an existing `.env` still wins, so a database
+ * already provisioned with random passwords is left exactly as it is.
+ */
+export function derivePassword(ownerUrl: string, role: Role): string {
+  return createHmac("sha256", ownerUrl)
+    .update(`vesti-role:${role}`)
+    .digest("base64url")
+    .replace(/[_-]/g, "")
+    .slice(0, 32);
+}
 
 // ── Steps ────────────────────────────────────────────────────────────────────
 
@@ -328,21 +353,21 @@ async function main(): Promise<void> {
   }
   env.set("DATABASE_URL", ownerUrl);
 
-  // 2. Role passwords: generated once, then kept.
+  // 2. Role passwords: derived from the owner URL, so every run agrees.
   const passwords = {} as Record<Role, string>;
   let generated = 0;
   for (const role of ROLES) {
     const key = `VESTI_${role.toUpperCase()}_PASSWORD`;
     let value = env.get(key) ?? "";
     if (!value || value === "CHANGEME") {
-      value = generatePassword();
+      value = derivePassword(ownerUrl, role);
       generated++;
     }
     passwords[role] = value;
     env.set(key, value);
     env.set(`DATABASE_URL_${role.toUpperCase()}`, roleUrl(new URL(ownerUrl), role, value));
   }
-  say(`  ${good("✓")} four role URLs derived${generated ? ` (${generated} password(s) generated)` : ""}`);
+  say(`  ${good("✓")} four role URLs derived${generated ? ` (${generated} password(s) derived)` : ""}`);
 
   // 3. Credentials that only a human has.
   const alpacaId = env.get("ALPACA_API_KEY_ID") ?? "";

@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   parseConnectionString,
   roleUrl,
+  derivePassword,
   generatePassword,
   directEndpoint,
 } from "./setup.mts";
@@ -166,5 +167,39 @@ describe("directEndpoint", () => {
   it("does not fire on a host that merely contains the word pooler", () => {
     const url = "postgresql://u:pw@pooler-db.example.com/db";
     assert.equal(new URL(directEndpoint(url)).hostname, "pooler-db.example.com");
+  });
+});
+
+const ROLE_NAMES = ["app", "research", "execution", "backtest"] as const;
+
+describe("derivePassword", () => {
+  it("gives the same answer every time for the same database", () => {
+    // The property the dashboard depends on. Before this, every CI run invented
+    // new role passwords and reset the roles to match, so a deployment holding
+    // one of these URLs worked until the next session and then failed with a
+    // password error, having changed nothing itself.
+    const owner = "postgres://postgres:hunter2@db.example.com/vesti";
+    assert.equal(derivePassword(owner, "app"), derivePassword(owner, "app"));
+  });
+
+  it("gives each role a different password", () => {
+    const owner = "postgres://postgres:hunter2@db.example.com/vesti";
+    const all = ROLE_NAMES.map((r) => derivePassword(owner, r));
+    assert.equal(new Set(all).size, all.length);
+  });
+
+  it("gives a different password on a different database", () => {
+    assert.notEqual(
+      derivePassword("postgres://postgres:a@one.example.com/vesti", "app"),
+      derivePassword("postgres://postgres:a@two.example.com/vesti", "app"),
+    );
+  });
+
+  it("stays safe in URLs, SQL literals and shells", () => {
+    for (const role of ROLE_NAMES) {
+      const password = derivePassword("postgres://postgres:x@h/vesti", role);
+      assert.match(password, /^[A-Za-z0-9]+$/);
+      assert.ok(password.length >= 24);
+    }
   });
 });
