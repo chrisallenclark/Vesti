@@ -4,8 +4,13 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Vesti",
-  description: "Evidence-driven investment and trading intelligence.",
+  description: "The autonomous paper trader, live.",
+  manifest: "/manifest.webmanifest",
   appleWebApp: { capable: true, statusBarStyle: "black-translucent", title: "Vesti" },
+  // A private portfolio has no business in anybody's search index, and the
+  // gate in middleware.ts should not be the only thing standing between this
+  // page and a crawler.
+  robots: { index: false, follow: false },
 };
 
 export const viewport: Viewport = {

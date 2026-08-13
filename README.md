@@ -49,6 +49,32 @@ real strategy over the real feed and printing what each rule concluded about
 each symbol. It is strictly read-only, so it is safe to run while the worker is
 running.
 
+### On your phone
+
+The desk is a normal web app, so putting it on a phone means hosting it. It is
+built to deploy on Vercel with no configuration beyond three settings:
+
+| Setting | Value |
+|---|---|
+| Root directory | `apps/web` |
+| `DATABASE_URL_APP` | the `vesti_app` URL from `.env` — **not** the execution one |
+| `VESTI_PASSCODE` | any long phrase you choose |
+
+Then open `https://<your-app>.vercel.app/?passcode=<your passcode>` once on the
+phone and use **Share -> Add to Home Screen**. It opens without browser chrome
+and keeps you signed in for a month.
+
+**`VESTI_PASSCODE` is not optional.** This page shows a real portfolio and can
+halt a real trading loop, and a URL nobody has guessed yet is not a secret — it
+is an unlocked door in a quiet street. Without the passcode set, the gate in
+`middleware.ts` is open. With it set, everything except the icons answers 404
+until the right one is presented, and the cookie stored afterwards is an HMAC
+rather than the passcode itself.
+
+The app connects as `vesti_app`, which cannot write orders, fills or lots and
+holds no broker credential. The worst a stolen session can do is read, and trip
+the kill switch — which only ever stops trading.
+
 Unattended, the same worker runs in GitHub Actions through each session
 (`intraday.yml`). `workflow_dispatch` is refused for this repository's token, so
 every workflow can also be started by committing its request file under
