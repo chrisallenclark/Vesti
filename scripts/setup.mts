@@ -179,6 +179,25 @@ export const generatePassword = (): string => randomBytes(24).toString("base64ur
  * like. And it stays compatible — an existing `.env` still wins, so a database
  * already provisioned with random passwords is left exactly as it is.
  */
+/**
+ * The one form of the owner URL that everything must agree on.
+ *
+ * Role passwords are an HMAC over this string, so any two callers that
+ * normalise differently derive different passwords — and the failure is silent
+ * until something outside setup tries to connect and is told its password is
+ * wrong. That happened: `app-url` hashed the URL exactly as it was typed, while
+ * setup hashed it after stripping Neon's `-pooler` suffix, so the connection
+ * string it printed had never been valid.
+ *
+ * Anything that derives a role password calls this first. Not a convention —
+ * the reason it is a named export rather than three lines copied twice.
+ */
+export function canonicalOwnerUrl(raw: string): string {
+  const parsed = parseConnectionString(raw);
+  if (!("url" in parsed)) throw new Error(parsed.error);
+  return directEndpoint(parsed.url.toString());
+}
+
 export function derivePassword(ownerUrl: string, role: Role): string {
   return createHmac("sha256", ownerUrl)
     .update(`vesti-role:${role}`)
@@ -336,8 +355,9 @@ async function main(): Promise<void> {
   for (;;) {
     const parsed = ownerUrl ? parseConnectionString(ownerUrl) : { error: "" };
     if ("url" in parsed) {
-      ownerUrl = directEndpoint(parsed.url.toString());
-      const pooled = ownerUrl !== parsed.url.toString();
+      const before = parsed.url.toString();
+      ownerUrl = canonicalOwnerUrl(ownerUrl);
+      const pooled = ownerUrl !== before;
       say(`  ${good("✓")} database ${dim(new URL(ownerUrl).hostname)}`);
       if (pooled) {
         say(dim("    (switched off the -pooler endpoint: migrations need a direct session)"));

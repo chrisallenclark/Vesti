@@ -15,7 +15,7 @@
  * only boundary that makes the dashboard safe to expose at all.
  */
 
-import { derivePassword, roleUrl } from "./setup.mts";
+import { canonicalOwnerUrl, derivePassword, roleUrl } from "./setup.mts";
 
 const owner = process.env.DATABASE_URL;
 if (!owner) {
@@ -28,7 +28,13 @@ if (!owner) {
   process.exit(1);
 }
 
-const explicit = process.env.VESTI_APP_PASSWORD;
-const password = explicit && explicit !== "CHANGEME" ? explicit : derivePassword(owner, "app");
+// Normalised exactly as setup normalises it. The password is an HMAC over this
+// string, so hashing the URL as typed — with Neon's `-pooler` suffix still on
+// it — produces a password the database has never been given.
+const canonical = canonicalOwnerUrl(owner);
 
-process.stdout.write(`${roleUrl(new URL(owner), "app", password)}\n`);
+const explicit = process.env.VESTI_APP_PASSWORD;
+const password =
+  explicit && explicit !== "CHANGEME" ? explicit : derivePassword(canonical, "app");
+
+process.stdout.write(`${roleUrl(new URL(canonical), "app", password)}\n`);

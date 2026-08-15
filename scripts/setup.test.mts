@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import {
   parseConnectionString,
   roleUrl,
+  canonicalOwnerUrl,
   derivePassword,
   generatePassword,
   directEndpoint,
@@ -201,5 +202,29 @@ describe("derivePassword", () => {
       assert.match(password, /^[A-Za-z0-9]+$/);
       assert.ok(password.length >= 24);
     }
+  });
+});
+
+describe("canonicalOwnerUrl", () => {
+  const POOLED =
+    "postgresql://owner:secret@ep-x-pooler.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require";
+  const DIRECT = "postgresql://owner:secret@ep-x.c-5.us-east-2.aws.neon.tech/neondb?sslmode=require";
+
+  it("gives the pooled and direct forms of one database the same password", () => {
+    // The bug this exists for: `app-url` hashed the URL as typed while setup
+    // hashed it with Neon's -pooler suffix stripped, so the connection string
+    // printed for the dashboard had never been valid anywhere.
+    assert.equal(
+      derivePassword(canonicalOwnerUrl(POOLED), "app"),
+      derivePassword(canonicalOwnerUrl(DIRECT), "app"),
+    );
+  });
+
+  it("strips the pooler suffix, which migrations cannot use", () => {
+    assert.ok(!new URL(canonicalOwnerUrl(POOLED)).hostname.includes("-pooler."));
+  });
+
+  it("refuses a string that is not a connection URL", () => {
+    assert.throws(() => canonicalOwnerUrl("not-a-url"));
   });
 });
