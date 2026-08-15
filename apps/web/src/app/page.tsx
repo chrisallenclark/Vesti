@@ -1,5 +1,5 @@
 import { TradingDesk } from "@/components/TradingDesk.tsx";
-import { readLiveView, type LiveView } from "@/server/live";
+import { explain, readLiveView, type LiveView } from "@/server/live";
 
 /**
  * The home page is the trading desk.
@@ -23,7 +23,7 @@ export default async function DeskPage() {
     // The page still renders and the client will retry. A dashboard that throws
     // on a transient database blip is one that cannot tell you the difference
     // between "the database is down" and "the trader is down".
-    error = cause instanceof Error ? cause.message : String(cause);
+    error = explain(cause);
   }
 
   return (

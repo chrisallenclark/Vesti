@@ -24,10 +24,55 @@ function livePool(): Pool {
   if (pool) return pool;
   const connectionString = process.env.DATABASE_URL_APP;
   if (!connectionString) {
-    throw new Error("DATABASE_URL_APP is unset. The web app connects as vesti_app — see .env.example.");
+    throw new Error(
+      "DATABASE_URL_APP is not set. In Vercel: Settings → Environment Variables → " +
+        "add DATABASE_URL_APP, then redeploy.",
+    );
   }
-  pool = new Pool({ connectionString, max: 4, idleTimeoutMillis: 30_000 });
+  pool = new Pool({
+    connectionString,
+    max: 4,
+    idleTimeoutMillis: 30_000,
+    // The same bounds the worker uses. A serverless database scales its compute
+    // in and out, and a connection that has silently gone away never answers —
+    // which would hang the request rather than fail it.
+    connectionTimeoutMillis: 10_000,
+    query_timeout: 15_000,
+    statement_timeout: 15_000,
+    keepAlive: true,
+  });
   return pool;
+}
+
+/**
+ * Turns the two ways this is misconfigured into sentences that say what to do.
+ *
+ * Both are things a person setting up a deployment hits, and both arrive as
+ * database errors that name a Postgres role rather than the setting that is
+ * wrong. "password authentication failed for user vesti_app" is true and
+ * useless; the actual cause is almost always a connection string copied before
+ * the passwords were last synchronised, and the fix is one command and one
+ * paste.
+ */
+export function explain(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+
+  if (/password authentication failed/i.test(raw)) {
+    return (
+      "The database refused this app's password. That usually means the main " +
+      "database password was changed after this connection string was copied. " +
+      "Get a fresh one with `npm run app-url`, then update DATABASE_URL_APP in " +
+      "Vercel → Settings → Environment Variables and redeploy."
+    );
+  }
+  if (/does not exist|role .* does not exist/i.test(raw)) {
+    return (
+      "The `vesti_app` database user does not exist yet. Run the setup workflow " +
+      "once (GitHub → Actions → Set up and ingest), which creates it."
+    );
+  }
+  // Never let a connection string reach the browser, whatever the error was.
+  return raw.replace(/postgres(ql)?:\/\/[^\s"]+/gi, "postgres://<redacted>");
 }
 
 /** How long since a heartbeat before the worker is presumed gone. */

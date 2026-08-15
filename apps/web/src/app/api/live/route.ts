@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readLiveView } from "@/server/live";
+import { explain, readLiveView } from "@/server/live";
 
 /**
  * The dashboard's only read.
@@ -23,9 +23,8 @@ export async function GET(): Promise<NextResponse> {
     // The message, not the stack, and never the connection string. A page that
     // cannot reach the database has to say so — showing an empty dashboard
     // instead would read as "nothing is happening".
-    const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: message.replace(/postgres(ql)?:\/\/[^\s"]+/gi, "postgres://<redacted>") },
+      { error: explain(error) },
       { status: 500, headers: { "cache-control": "no-store" } },
     );
   }

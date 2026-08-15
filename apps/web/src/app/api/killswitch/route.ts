@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readLiveView, tripKillSwitchFromApp } from "@/server/live";
+import { explain, readLiveView, tripKillSwitchFromApp } from "@/server/live";
 
 /**
  * The kill switch, reachable from the page.
@@ -31,9 +31,8 @@ export async function POST(request: Request): Promise<NextResponse> {
     await tripKillSwitchFromApp(view.accountId, reason, "dashboard");
     return NextResponse.json({ tripped: true, reason });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: message.replace(/postgres(ql)?:\/\/[^\s"]+/gi, "postgres://<redacted>") },
+      { error: explain(error) },
       { status: 500 },
     );
   }
