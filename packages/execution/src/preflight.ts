@@ -40,6 +40,8 @@ function head(title: string): void {
 const ok = (label: string, detail = ""): void => say(`  [32m✓[0m ${label}  ${detail}`);
 const bad = (label: string, detail = ""): void => say(`  [31m✗[0m ${label}  ${detail}`);
 
+const dim = (text: string): string => `\u001b[2m${text}\u001b[0m`;
+
 let failures = 0;
 
 /** Runs one check, records a failure, and never lets one stop the rest. */
@@ -224,6 +226,41 @@ async function main(): Promise<void> {
       }
 
       if (orphans.length > 0) {
+        // The alarm alone is not actionable — "nobody owns it" says nothing
+        // about how it got that way, and the answer is entirely in what the
+        // ledger already recorded. So the last thing that happened to each
+        // loose symbol comes out with the alarm, in one read, rather than
+        // costing another round trip to a database only CI can reach.
+        const symbols = orphans.map((o) => o.split(" ")[1]!);
+        const { rows: history } = await pool!.query<{
+          symbol: string;
+          what: string;
+          detail: string;
+          at: Date;
+        }>(
+          `SELECT s.symbol,
+                  'order' AS what,
+                  o.side || ' ' || o.quantity || ' filled ' || o.filled_quantity
+                    || ' (' || o.status || ')' AS detail,
+                  o.created_at AS at
+             FROM orders o JOIN securities s ON s.id = o.security_id
+            WHERE o.account_id = $1 AND s.symbol = ANY($2::text[])
+            UNION ALL
+           SELECT s.symbol,
+                  'lot' AS what,
+                  'opened ' || l.quantity || ', ' || l.remaining || ' remaining' AS detail,
+                  l.opened_at AS at
+             FROM lots l JOIN securities s ON s.id = l.security_id
+            WHERE l.account_id = $1 AND s.symbol = ANY($2::text[])
+            ORDER BY at DESC
+            LIMIT 12`,
+          [accountId, symbols],
+        );
+
+        for (const row of history) {
+          say(`      ${dim(`${row.at.toISOString().slice(0, 16)}  ${row.symbol} ${row.what}: ${row.detail}`)}`);
+        }
+
         throw new Error(
           `no strategy owns ${orphans.join(", ")} — held at the broker, claimed by no lot, ` +
             `so nothing will ever exit it` +
