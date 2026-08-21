@@ -613,6 +613,50 @@ describe("the DAY engine, end to end", () => {
     );
   });
 
+  it("hands the account straight over when the last worker stopped cleanly", async () => {
+    // The morning and afternoon sessions are one queued behind the other, so a
+    // successor always arrives within seconds of its predecessor's final beat.
+    // Reading that beat as a live rival is what stopped the afternoon session
+    // from ever starting — and an intraday position that is never flattened is
+    // exactly the trade nobody sized.
+    const morning = new Observer({
+      pool,
+      accountId,
+      engine: "DAY",
+      tradingMode: "paper",
+      workerId: "morning",
+    });
+    await morning.beat("running", { alpacaOk: true });
+    await morning.beat("stopped", { alpacaOk: true });
+
+    const afternoon = new Observer({
+      pool,
+      accountId,
+      engine: "DAY",
+      tradingMode: "paper",
+      workerId: "afternoon",
+    });
+    assert.equal(
+      await afternoon.leaseHolder(3 * 60 * 1000),
+      null,
+      "a predecessor that announced it stopped is not holding the account",
+    );
+
+    // But only because it SAID so. A worker that was killed leaves its status
+    // wherever it last was, and that must still hold the account until the
+    // beats have been silent long enough to prove nobody is trading.
+    await pool.query(
+      `UPDATE worker_state SET status = 'running', last_beat_at = now()
+        WHERE account_id = $1 AND engine = 'DAY'`,
+      [accountId],
+    );
+    assert.equal(
+      (await afternoon.leaseHolder(3 * 60 * 1000))?.workerId,
+      "morning",
+      "a worker that was killed mid-session must not be assumed gone",
+    );
+  });
+
   it("submits nothing while the kill switch is tripped", async () => {
     await tripKillSwitch(pool, { accountId, reason: "testing the halt", by: "test" });
 

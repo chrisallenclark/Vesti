@@ -248,13 +248,40 @@ async function main(): Promise<void> {
     // guard stops being one the moment somebody starts a worker by hand or a
     // job is retried — and two workers on one account is the shape of a
     // duplicate order.
-    const holder = await observer.leaseHolder(LEASE_STALE_MS);
-    if (holder) {
-      throw new Error(
-        `Another DAY worker (${holder.workerId}) beat ${Math.round(holder.ageSeconds)}s ago on ` +
-          `this account. Refusing to start a second one — two workers on one account is how the ` +
-          `same signal becomes two orders. Wait for it to stop, or halt it.`,
+    //
+    // A held lease is WAITED OUT rather than treated as fatal. The two cases
+    // look identical for the first few minutes and need opposite responses:
+    //
+    //   a predecessor that was KILLED — a job timeout, which is how the morning
+    //   session always ends — leaves a fresh beat that never advances again,
+    //   and its queued successor arrives seconds later. Dying here means the
+    //   afternoon never runs, so a position opened in the morning is never
+    //   flattened.
+    //
+    //   a genuinely LIVE rival keeps beating, so its lease never goes stale and
+    //   the wait below expires. That is the case worth refusing, and it still
+    //   is.
+    //
+    // Waiting distinguishes them with the only evidence that separates them:
+    // whether the beats continue.
+    const waitUntil = Date.now() + LEASE_STALE_MS + 30_000;
+    for (;;) {
+      const holder = await observer.leaseHolder(LEASE_STALE_MS);
+      if (!holder) break;
+      if (Date.now() >= waitUntil) {
+        throw new Error(
+          `Another DAY worker (${holder.workerId}) is still beating on this account ` +
+            `(${Math.round(holder.ageSeconds)}s ago) after waiting for its lease to go stale. ` +
+            `Refusing to start a second one — two workers on one account is how the same signal ` +
+            `becomes two orders. Halt it, or wait for it to stop.`,
+        );
+      }
+      say(
+        `waiting for ${holder.workerId} to release the account — ` +
+          `it beat ${Math.round(holder.ageSeconds)}s ago, and a lease is stale after ` +
+          `${Math.round(LEASE_STALE_MS / 1000)}s`,
       );
+      await new Promise((resolve) => setTimeout(resolve, 15_000));
     }
 
     await observer.beat("starting", { alpacaOk: true, databaseOk: true });

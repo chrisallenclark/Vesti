@@ -184,13 +184,29 @@ export class Observer {
    * nobody).
    */
   async leaseHolder(staleAfterMs: number): Promise<{ workerId: string; ageSeconds: number } | null> {
-    const { rows } = await this.options.pool.query<{ worker_id: string; age: string }>(
-      `SELECT worker_id, extract(epoch FROM (now() - last_beat_at)) AS age
+    const { rows } = await this.options.pool.query<{
+      worker_id: string;
+      status: WorkerStatus;
+      age: string;
+    }>(
+      `SELECT worker_id, status, extract(epoch FROM (now() - last_beat_at)) AS age
          FROM worker_state WHERE account_id = $1 AND engine = $2`,
       [this.options.accountId, this.options.engine],
     );
     const row = rows[0];
     if (!row || row.worker_id === this.options.workerId) return null;
+
+    // A worker that stopped cleanly said so on its way out, and a heartbeat
+    // seconds old saying `stopped` is not a rival — it is a predecessor that
+    // finished. Reading it as a live holder is what broke the handover between
+    // the morning and afternoon sessions: the successor is queued to start as
+    // the first one ends, so it always arrived within seconds of that last
+    // beat and always refused.
+    //
+    // A worker that was KILLED is the case this still has to cover, and it
+    // looks different: the status stays whatever it last was and the beats
+    // simply stop. That is what the staleness window below is for.
+    if (row.status === "stopped") return null;
 
     const ageSeconds = Number(row.age);
     if (ageSeconds * 1000 > staleAfterMs) return null; // abandoned; ours to take
