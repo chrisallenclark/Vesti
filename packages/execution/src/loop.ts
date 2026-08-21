@@ -176,7 +176,7 @@ export async function runSession(options: LoopOptions): Promise<LoopOutcome> {
   const universe = await universeSymbols(pool);
   const submitted: LoopOutcome["ordersSubmitted"] = [];
 
-  for (const strategy of promoted) {
+  for (const { strategy, strategyVersionId } of promoted) {
     const mandateId = await mandateIdFor(pool, accountId, strategy.mandate);
     if (!mandateId) {
       log(`no ${strategy.mandate} mandate on this account; skipping ${strategy.key}`);
@@ -211,6 +211,7 @@ export async function runSession(options: LoopOptions): Promise<LoopOutcome> {
           accountId,
           mandateId,
           mandateKind: strategy.mandate,
+          strategyVersionId,
           signal,
           asOf,
           limits,
@@ -260,6 +261,7 @@ interface ActParams {
   accountId: string;
   mandateId: string;
   mandateKind: MandateKind;
+  strategyVersionId: string;
   signal: StrategySignal;
   asOf: string;
   limits: RiskLimits;
@@ -276,7 +278,8 @@ interface ActParams {
  * never produced, which makes "why didn't it take that trade?" unanswerable.
  */
 async function actOnSignal(params: ActParams): Promise<LoopOutcome["ordersSubmitted"][number] | null> {
-  const { pool, ledger, broker, accountId, mandateId, signal, asOf, dryRun, log } = params;
+  const { pool, ledger, broker, accountId, mandateId, strategyVersionId, signal, asOf, dryRun, log } =
+    params;
 
   const securityId = await securityIdFor(pool, signal.symbol);
   if (!securityId) throw new Error(`${signal.symbol} is not in securities`);
@@ -367,6 +370,7 @@ async function actOnSignal(params: ActParams): Promise<LoopOutcome["ordersSubmit
     kind: "market",
     quantity,
     timeInForce: "day",
+    strategyVersionId,
   });
   const attached = await ledger.recordRiskRuling(orderId, {
     decision: ruling.decision,
@@ -520,7 +524,7 @@ async function promotedStrategies(
   pool: pg.Pool,
   accountId: string,
   strategies: readonly Strategy[],
-): Promise<Strategy[]> {
+): Promise<{ strategy: Strategy; strategyVersionId: string }[]> {
   if (strategies.length === 0) return [];
 
   // `strategy_versions` is append-only, so a promotion is a NEW row rather than
@@ -529,6 +533,7 @@ async function promotedStrategies(
   // and the identity of the RULES lives in `spec.code_version`. The current
   // standing of a rule set is the status on its highest revision.
   const { rows } = await pool.query<{
+    id: string;
     slug: string;
     code_version: string | null;
     status: StrategyStatus;
@@ -538,7 +543,7 @@ async function promotedStrategies(
     // and matching on slug alone would let one account's promotion authorise
     // trading on another's.
     `SELECT DISTINCT ON (st.slug, sv.spec->>'code_version')
-            st.slug, sv.spec->>'code_version' AS code_version, sv.status
+            sv.id, st.slug, sv.spec->>'code_version' AS code_version, sv.status
        FROM strategy_versions sv
        JOIN strategies st ON st.id = sv.strategy_id
        JOIN accounts a    ON a.user_id = st.user_id
@@ -547,12 +552,20 @@ async function promotedStrategies(
     [strategies.map((s) => s.key), accountId],
   );
 
-  const promoted = new Set(
+  // The VERSION ID travels with the strategy, not just its name. Every order
+  // has to record which strategy placed it: an order without one opens a lot
+  // without one, and a lot no engine claims is a position nothing will ever
+  // exit. Returning the pair here is what makes that impossible to forget at
+  // the call site.
+  const promoted = new Map(
     rows
       .filter((row) => TRADEABLE_ON_PAPER.has(row.status))
-      .map((row) => `${row.slug}@${row.code_version}`),
+      .map((row) => [`${row.slug}@${row.code_version}`, row.id] as const),
   );
-  return strategies.filter((s) => promoted.has(`${s.key}@${s.version}`));
+  return strategies.flatMap((strategy) => {
+    const strategyVersionId = promoted.get(`${strategy.key}@${strategy.version}`);
+    return strategyVersionId ? [{ strategy, strategyVersionId }] : [];
+  });
 }
 
 async function universeSymbols(pool: pg.Pool): Promise<string[]> {

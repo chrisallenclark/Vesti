@@ -50,6 +50,7 @@ let accountId: string;
 let activeMandateId: string;
 let longTermMandateId: string;
 let securityId: string;
+let strategyVersionId: string;
 let symbol: string;
 /** A symbol the broker can report that our ledger has no lots for. */
 let otherSymbol: string;
@@ -124,6 +125,23 @@ beforeEach(async () => {
   );
   accountId = accounts[0]!.id;
 
+  // Every order names the strategy placing it, so the fixture has to supply one
+  // — the ledger refuses an intent without it. That refusal is deliberate: an
+  // order with no strategy opens a lot with no strategy, and no engine will
+  // ever find, manage or exit that position.
+  const { rows: strategies } = await admin.query<{ id: string }>(
+    `INSERT INTO strategies (user_id, slug, name, mandate_kind)
+     VALUES ($1, 'test.ledger', 'Ledger fixture', 'active') RETURNING id`,
+    [userId],
+  );
+  const { rows: versions } = await admin.query<{ id: string }>(
+    `INSERT INTO strategy_versions (strategy_id, version, status, spec, authored_by, rationale)
+     VALUES ($1, 1, 'paper_approved', '{"code_version":"1"}'::jsonb, 'human', 'fixture')
+     RETURNING id`,
+    [strategies[0]!.id],
+  );
+  strategyVersionId = versions[0]!.id;
+
   const { rows: sourceRows } = await admin.query<{ id: string }>(
     `SELECT id FROM sources WHERE slug = 'synthetic'`,
   );
@@ -154,6 +172,7 @@ async function workingOrder(params: {
     side: params.side,
     kind: "market",
     quantity: params.quantity,
+    strategyVersionId,
   });
   await ledger.recordRiskRuling(orderId, {
     decision: "approve",
@@ -229,6 +248,7 @@ describe("order lifecycle", () => {
       kind: "limit",
       quantity: 100,
       limitPrice: 42.5,
+      strategyVersionId,
     });
     const { rows } = await admin.query<{ status: string; risk_evaluation_id: string | null }>(
       `SELECT status, risk_evaluation_id FROM orders WHERE id = $1`,
@@ -249,6 +269,7 @@ describe("order lifecycle", () => {
       side: "buy",
       kind: "market",
       quantity: 500,
+      strategyVersionId,
     });
     const result = await ledger.recordRiskRuling(orderId, {
       decision: "reduce",
@@ -276,6 +297,7 @@ describe("order lifecycle", () => {
       side: "buy",
       kind: "market",
       quantity: 90,
+      strategyVersionId,
     });
     const result = await ledger.recordRiskRuling(orderId, {
       decision: "reject",
@@ -306,6 +328,7 @@ describe("order lifecycle", () => {
       side: "buy",
       kind: "market",
       quantity: 10,
+      strategyVersionId,
     });
     await assert.rejects(
       () =>

@@ -67,7 +67,15 @@ export interface OrderIntent {
   limitPrice?: number;
   stopPrice?: number;
   timeInForce?: TimeInForce;
-  strategyVersionId?: string;
+  /**
+   * Which strategy is doing this. REQUIRED, and the reason is a position that
+   * went missing: an order recorded without one produces a lot without one,
+   * and every engine scopes its positions to its own strategy version — so
+   * that lot is owned by nobody, exited by nobody, and reported by nobody. It
+   * sat in the account for nine days looking exactly like stock somebody was
+   * managing.
+   */
+  strategyVersionId: string;
 }
 
 export interface RiskRuling {
@@ -157,6 +165,15 @@ export class OrderLedger {
    * trades that passed.
    */
   async recordIntent(intent: OrderIntent): Promise<string> {
+    // Belt as well as braces: the type says required, but this is also reached
+    // from JavaScript and from older callers, and the cost of getting it wrong
+    // is not an exception — it is a position nothing will ever close.
+    if (!intent.strategyVersionId) {
+      throw new Error(
+        "An order must name the strategy placing it. Without one the lot it opens " +
+          "belongs to no engine, and nothing will ever exit the position.",
+      );
+    }
     return this.transaction(async (client) => {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO orders
@@ -174,7 +191,7 @@ export class OrderLedger {
           intent.limitPrice ?? null,
           intent.stopPrice ?? null,
           intent.timeInForce ?? "day",
-          intent.strategyVersionId ?? null,
+          intent.strategyVersionId,
         ],
       );
       const orderId = rows[0]!.id;

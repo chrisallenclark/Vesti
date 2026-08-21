@@ -72,7 +72,7 @@ Never hand the web app the execution or backtest URL, and never give the request
 path a broker credential. When the page needs live prices, the worker writes
 them to `broker_snapshots` and the page reads that table.
 
-## The five invariants
+## The six invariants
 
 Enforced by the database, not by convention, and covered by
 `packages/db/src/invariants.test.ts`:
@@ -84,8 +84,23 @@ Enforced by the database, not by convention, and covered by
 4. Mandate isolation — lots belong to one mandate; an exit cannot reach another's.
 5. History is append-only — decision records reject UPDATE/DELETE; `audit_log`
    is hash-chained.
+6. Every open position has an owner — an open lot must name a
+   `strategy_version_id`, and `recordIntent` refuses an order without one.
 
 Do not weaken any of them to make a test pass.
+
+The sixth was learned late and cost nine days of nobody noticing. Two shares of
+AVGO sat in the account held by the broker and claimed by no lot with a
+strategy. Every engine finds its positions with `WHERE strategy_version_id =
+$mine` — deliberately, so a day strategy's 15:45 flatten cannot close a
+multi-week position belonging to something else — and no null ever matches. So
+the shares were listed by no engine, exited by no flatten, absent from every
+strategy's P&L, and indistinguishable from a position under management. Nothing
+failed. The position simply stopped being anybody's.
+
+**Whenever a query scopes rows to one owner, ask what happens to a row whose
+owner is null.** The answer is almost always "it disappears silently", and
+silence is the failure mode this project can least afford.
 
 ## Autonomous trading must be observable
 

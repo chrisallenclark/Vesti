@@ -281,6 +281,8 @@ describe("mandate isolation and the risk gate", () => {
     security: "55555555-5555-5555-5555-555555555555",
     longTermLot: "66666666-6666-6666-6666-666666666666",
     evaluation: "88888888-8888-8888-8888-888888888888",
+    strategy: "99999999-9999-9999-9999-999999999999",
+    strategyVersion: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
   };
 
   before(async () => {
@@ -299,11 +301,26 @@ describe("mandate isolation and the risk gate", () => {
        SELECT $1, 'ISOX', 'Isolation Test', id FROM sources WHERE slug = 'manual'`,
       [ids.security],
     );
+    // An open lot must name the strategy that owns it — see 014. A position
+    // nobody owns is exited by nobody, which is a different way to lose track
+    // of stock than the cross-mandate reach this suite is about, and just as
+    // silent.
+    await db.query(
+      `INSERT INTO strategies (id, user_id, slug, name, mandate_kind)
+       VALUES ($1, $2, 'iso.fixture', 'Isolation fixture', 'long_term')`,
+      [ids.strategy, ids.user],
+    );
+    await db.query(
+      `INSERT INTO strategy_versions (id, strategy_id, version, status, spec, authored_by, rationale)
+       VALUES ($1, $2, 1, 'paper_approved', '{"code_version":"1"}'::jsonb, 'human', 'fixture')`,
+      [ids.strategyVersion, ids.strategy],
+    );
     // 100 shares held by the LONG-TERM mandate.
     await db.query(
-      `INSERT INTO lots (id, account_id, mandate_id, security_id, opened_at, quantity, remaining, cost_basis)
-       VALUES ($1, $2, $3, $4, now(), 100, 100, 50.00)`,
-      [ids.longTermLot, ids.account, ids.longTerm, ids.security],
+      `INSERT INTO lots (id, account_id, mandate_id, security_id, opened_at, quantity, remaining,
+                         cost_basis, strategy_version_id)
+       VALUES ($1, $2, $3, $4, now(), 100, 100, 50.00, $5)`,
+      [ids.longTermLot, ids.account, ids.longTerm, ids.security, ids.strategyVersion],
     );
     await db.query(
       `INSERT INTO risk_evaluations
@@ -367,6 +384,62 @@ describe("mandate isolation and the risk gate", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+describe("every open position has an owner", () => {
+  // The failure this prevents took nine days to notice and was invisible from
+  // every direction: two shares held at the broker, claimed by no lot with a
+  // strategy, so no engine listed them, no flatten considered them, and no P&L
+  // included them. They looked precisely like stock under management.
+  const ids = {
+    user: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    mandate: "cccccccc-cccc-cccc-cccc-cccccccccccc",
+    account: "dddddddd-dddd-dddd-dddd-dddddddddddd",
+    security: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+  };
+
+  before(async () => {
+    await db.query(`INSERT INTO users (id, email) VALUES ($1, 'owner@example.com')`, [ids.user]);
+    await db.query(`INSERT INTO mandates (id, user_id, kind, name) VALUES ($1, $2, 'active', 'A')`, [
+      ids.mandate,
+      ids.user,
+    ]);
+    await db.query(`INSERT INTO accounts (id, user_id, broker) VALUES ($1, $2, 'sim')`, [
+      ids.account,
+      ids.user,
+    ]);
+    await db.query(
+      `INSERT INTO securities (id, symbol, name, source_id)
+       SELECT $1, 'OWNX', 'Owner Test', id FROM sources WHERE slug = 'manual'`,
+      [ids.security],
+    );
+  });
+
+  it("refuses to open a lot that names no strategy", async () => {
+    await assert.rejects(
+      db.query(
+        `INSERT INTO lots (account_id, mandate_id, security_id, opened_at, quantity, remaining,
+                           cost_basis)
+         VALUES ($1, $2, $3, now(), 10, 10, 5.00)`,
+        [ids.account, ids.mandate, ids.security],
+      ),
+      /lots_open_position_has_an_owner/,
+      "an open position with no strategy is one nothing will ever exit",
+    );
+  });
+
+  it("still allows a fully closed lot to carry none, because history is not rewritten", async () => {
+    // Lots sold before the rule existed keep whatever attribution they had.
+    // Forcing one on them would invent a fact rather than record one, and a
+    // closed lot is answering no live question.
+    await db.query(
+      `INSERT INTO lots (account_id, mandate_id, security_id, opened_at, quantity, remaining,
+                         cost_basis, closed_at)
+       VALUES ($1, $2, $3, now(), 10, 0, 5.00, now())`,
+      [ids.account, ids.mandate, ids.security],
+    );
+  });
+});
+
 describe("cost control and job queue", () => {
   it("prices model calls against published rates", async () => {
     const { rows } = await db.query<{ full: string; batched: string; cached: string }>(

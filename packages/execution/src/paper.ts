@@ -63,6 +63,13 @@ async function main(): Promise<void> {
   const mandateKind = (arg("mandate") ?? "active") as MandateKind;
   const side = (arg("side") ?? "buy") as "buy" | "sell";
   const dryRun = flag("dry-run");
+  // Which strategy this order is attributed to. Not cosmetic: the order records
+  // it, the lot inherits it from the order, and every engine finds its
+  // positions by it. This tool placed two shares of AVGO in August with no
+  // strategy attached, and they sat in the account for nine days owned by
+  // nobody — held at the broker, exited by no flatten, absent from every
+  // strategy's P&L, and indistinguishable from a position under management.
+  const strategyKey = arg("strategy") ?? "day.opening_range_breakout";
 
   const keyId = process.env.ALPACA_API_KEY_ID;
   const secretKey = process.env.ALPACA_API_SECRET_KEY;
@@ -100,6 +107,30 @@ async function main(): Promise<void> {
       mandateKind,
       symbol,
     });
+
+    // Resolved before anything is submitted, and fatal if missing. A proof
+    // order that cannot say who placed it creates precisely the orphan this
+    // whole tool exists to prove cannot happen.
+    const { rows: strategyRows } = await pool.query<{ id: string; slug: string }>(
+      `SELECT sv.id, st.slug
+         FROM strategy_versions sv
+         JOIN strategies st ON st.id = sv.strategy_id
+         JOIN accounts a    ON a.user_id = st.user_id
+        WHERE a.id = $1 AND st.slug = $2
+        ORDER BY sv.version DESC
+        LIMIT 1`,
+      [accountId, strategyKey],
+    );
+    const strategyVersionId = strategyRows[0]?.id;
+    if (!strategyVersionId) {
+      throw new Error(
+        `No strategy "${strategyKey}" is registered for this account, so an order placed now ` +
+          `would belong to nobody and nothing would ever exit the position it opens. ` +
+          `Register it first (npm run session -w @vesti/execution -- --register), or pass ` +
+          `--strategy <key> naming one that exists.`,
+      );
+    }
+    say(`attributing to  ${strategyRows[0]!.slug}`);
 
     // Detection, not netting — see selfcross.ts. Better a clear refusal here
     // than a wash-trade rejection after submission.
@@ -169,6 +200,7 @@ async function main(): Promise<void> {
       kind: "market",
       quantity: finalQuantity,
       timeInForce: "day",
+      strategyVersionId,
     });
     const attached = await ledger.recordRiskRuling(orderId, {
       decision: ruling.decision,
