@@ -88,11 +88,12 @@ async function main(): Promise<void> {
     const account = await broker.getAccount();
     return `equity $${account.equity.toFixed(2)}  buying power $${account.buyingPower.toFixed(2)}`;
   });
+  let held: { symbol: string; quantity: number }[] = [];
   await check("current positions", async () => {
-    const positions = await broker.listPositions();
-    return positions.length === 0
+    held = await broker.listPositions();
+    return held.length === 0
       ? "flat"
-      : positions.map((p) => `${p.quantity} ${p.symbol}`).join(", ");
+      : held.map((p) => `${p.quantity} ${p.symbol}`).join(", ");
   });
   await check("open orders", async () => {
     const orders = await broker.listOpenOrders();
@@ -171,6 +172,65 @@ async function main(): Promise<void> {
       return rows
         .map((r) => `${r.engine} ${r.status}, ${r.cycles} cycles, ${Math.round(Number(r.age))}s ago`)
         .join("; ");
+    });
+
+    /**
+     * Which strategy owns each share the broker is holding.
+     *
+     * Worth asking out loud, because every engine scopes its positions to its
+     * own `strategy_version_id` — deliberately, so a day strategy's 15:45
+     * flatten cannot close somebody else's multi-week position. The cost of
+     * that isolation is a shape nothing else reports: stock the broker holds
+     * and no strategy claims. It would be flattened by nobody, appear in no
+     * strategy's P&L, and look from every other angle exactly like a position
+     * that is being managed.
+     *
+     * So the question is answered by name rather than inferred. Anything the
+     * ledger cannot account for is a failure, not a footnote.
+     */
+    await check("who owns the open positions", async () => {
+      if (held.length === 0) return "nothing held";
+
+      const { rows } = await pool!.query<{ symbol: string; owner: string; quantity: string }>(
+        `SELECT s.symbol,
+                st.slug || '@' || (sv.spec->>'code_version') AS owner,
+                sum(l.remaining)                             AS quantity
+           FROM lots l
+           JOIN securities s         ON s.id  = l.security_id
+           JOIN strategy_versions sv ON sv.id = l.strategy_version_id
+           JOIN strategies st        ON st.id = sv.strategy_id
+          WHERE l.account_id = $1 AND l.remaining > 0
+          GROUP BY s.symbol, owner`,
+        [accountId],
+      );
+
+      const claimed = new Map<string, { owner: string; quantity: number }[]>();
+      for (const row of rows) {
+        const list = claimed.get(row.symbol) ?? [];
+        list.push({ owner: row.owner, quantity: Number(row.quantity) });
+        claimed.set(row.symbol, list);
+      }
+
+      const described: string[] = [];
+      const orphans: string[] = [];
+      for (const position of held) {
+        const owners = claimed.get(position.symbol) ?? [];
+        const accounted = owners.reduce((sum, o) => sum + o.quantity, 0);
+        if (owners.length > 0) {
+          described.push(`${position.symbol} ${owners.map((o) => `${o.quantity} ${o.owner}`).join(" + ")}`);
+        }
+        const loose = position.quantity - accounted;
+        if (loose > 0) orphans.push(`${loose} ${position.symbol}`);
+      }
+
+      if (orphans.length > 0) {
+        throw new Error(
+          `no strategy owns ${orphans.join(", ")} — held at the broker, claimed by no lot, ` +
+            `so nothing will ever exit it` +
+            (described.length > 0 ? `. Accounted for: ${described.join("; ")}` : ""),
+        );
+      }
+      return described.join("; ");
     });
   }
 
