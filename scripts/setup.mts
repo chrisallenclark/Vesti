@@ -55,17 +55,52 @@ const say = (s = ""): void => void process.stdout.write(`${s}\n`);
  */
 function prompter(rl: ReturnType<typeof createInterface>) {
   const lines = rl[Symbol.asyncIterator]();
-  return async (question: string): Promise<string> => {
+  return async (question: string, whenMissing?: string): Promise<string> => {
     process.stdout.write(question);
     const { value, done } = await lines.next();
     if (done) {
       say();
-      throw new Error(`No input available for: ${question.trim()}`);
+      // Unattended. `No input available for: ...` is true and useless: it names
+      // the prompt rather than the thing that has to change, and the person
+      // reading it is looking at a red cross in GitHub Actions, not at this
+      // file. Callers supply the remedy, including where it lives.
+      throw new Error(whenMissing ?? `No input available for: ${question.trim()}`);
     }
     say();
     return String(value).trim();
   };
 }
+
+/**
+ * What to do about a missing secret, written for someone looking at a failed
+ * Actions run. Repository name comes from the runner where there is one, so the
+ * instruction points at the actual settings page rather than a placeholder.
+ */
+function missingSecret(name: string, what: string, looksLike: string, notThis?: string): string {
+  const repo = process.env.GITHUB_REPOSITORY ?? "chrisallenclark/Vesti";
+  const lines = [
+    `${name} is missing or malformed, and this run has nobody to ask.`,
+    "",
+    `It should be ${what}`,
+    "",
+    "Fix it here:",
+    `  1. Open  https://github.com/${repo}/settings/secrets/actions`,
+    `  2. Click  ${name}  →  Update secret`,
+    "  3. Paste the value below, then press Update secret",
+    "  4. Nothing else to do — the next run picks it up",
+    "",
+    `Correct shape:  ${looksLike}`,
+  ];
+  if (notThis) lines.push(`Wrong value:    ${notThis}`);
+  return lines.join("\n");
+}
+
+const DATABASE_URL_HELP = missingSecret(
+  "DATABASE_URL",
+  'the whole line from the Neon dashboard\'s "Connection string" box — not the password field under it.',
+  "postgresql://neondb_owner:PASSWORD@ep-something-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require",
+  "npg_xxxxxxxxxxxxxxxx   (that is only the password)",
+);
 const bad = (s: string): string => `\x1b[31m${s}\x1b[0m`;
 const good = (s: string): string => `\x1b[32m${s}\x1b[0m`;
 const dim = (s: string): string => `\x1b[2m${s}\x1b[0m`;
@@ -369,7 +404,7 @@ async function main(): Promise<void> {
       say(bad(`  ✗ ${parsed.error}`));
       say();
     }
-    ownerUrl = await ask("  Paste your database connection string: ");
+    ownerUrl = await ask("  Paste your database connection string: ", DATABASE_URL_HELP);
   }
   env.set("DATABASE_URL", ownerUrl);
 
@@ -394,8 +429,28 @@ async function main(): Promise<void> {
   if (!alpacaId || alpacaId.includes("://")) {
     if (alpacaId.includes("://")) say(bad("  ✗ ALPACA_API_KEY_ID held a URL — that field takes the key ID."));
     say(dim("    Alpaca → API Keys. The ID starts with PK; the secret is the longer value."));
-    env.set("ALPACA_API_KEY_ID", await ask("  Alpaca key ID: "));
-    env.set("ALPACA_API_SECRET_KEY", await ask("  Alpaca secret: "));
+    env.set(
+      "ALPACA_API_KEY_ID",
+      await ask(
+        "  Alpaca key ID: ",
+        missingSecret(
+          "ALPACA_API_KEY_ID",
+          "the API key ID from Alpaca → Home → API Keys (paper account).",
+          "PKXXXXXXXXXXXXXXXXXX",
+        ),
+      ),
+    );
+    env.set(
+      "ALPACA_API_SECRET_KEY",
+      await ask(
+        "  Alpaca secret: ",
+        missingSecret(
+          "ALPACA_API_SECRET_KEY",
+          "the longer secret shown once when the Alpaca paper key was created.",
+          "a 40-character string of letters and digits",
+        ),
+      ),
+    );
   } else {
     say(`  ${good("✓")} Alpaca keys present`);
   }
@@ -403,7 +458,14 @@ async function main(): Promise<void> {
   const contact = env.get("SEC_EDGAR_USER_AGENT") ?? "";
   if (!contact.includes("@")) {
     say(dim("    The SEC refuses requests without a real contact address."));
-    const email = await ask("  Your email (for the SEC User-Agent): ");
+    const email = await ask(
+      "  Your email (for the SEC User-Agent): ",
+      missingSecret(
+        "SEC_EDGAR_USER_AGENT",
+        "a real contact address; the SEC refuses requests without one.",
+        "Vesti Research you@example.com",
+      ),
+    );
     env.set("SEC_EDGAR_USER_AGENT", `Vesti Research ${email}`);
   } else {
     say(`  ${good("✓")} SEC contact present`);

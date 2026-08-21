@@ -86,6 +86,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      # Before npm ci, before anything that costs a minute: does each secret
+      # have the shape its provider hands out? A wrong paste here used to fail
+      # four steps later with a message about a prompt.
+      - uses: ./.github/actions/secrets-check
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -93,6 +97,7 @@ jobs:
       - run: npm ci
 
       - name: Configure
+        id: configure
         run: npm run setup -- --no-ingest < /dev/null
 
       # Registration is idempotent and lands at `experimental`; it never resets
@@ -112,6 +117,9 @@ jobs:
             --interval "${{ inputs.interval || '20' }}" \
             ${{ inputs.dry_run && '--dry-run' || '' }}
 
+      # Only when there was a session to have a standing after. Without the
+      # guard this runs on a failed Configure too and adds `DATABASE_URL_EXECUTION
+      # is unset` under the real error, which is the line people then chase.
       - name: Standing after the session
-        if: always()
+        if: always() && steps.configure.outcome == 'success'
         run: npm run session -w @vesti/execution -- --status

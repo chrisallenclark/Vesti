@@ -1,0 +1,74 @@
+# Fail in three seconds, with the fix, when a repository secret is wrong.
+#
+# The failure this exists for: DATABASE_URL was set to the Neon *password*
+# rather than the connection string. Every scheduled run then died at
+# `Configure` with `No input available for: Paste your database connection
+# string:`, and the four steps behind it added `DATABASE_URL_EXECUTION is
+# unset` on top — so the notification said "Run failed" and the log named the
+# prompt rather than the secret.
+#
+# The check is deliberately shallow. It does not connect to anything; it only
+# asks whether each value has the shape its provider hands out, which is enough
+# to catch every paste error seen so far and cannot itself become a source of
+# flakes.
+name: Check secrets
+description: Verify the repository secrets have the right shape before anything expensive runs.
+
+inputs:
+  require-alpaca:
+    description: "Also check the Alpaca keys. Off for jobs that only touch the database."
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        REPO: ${{ github.repository }}
+        REQUIRE_ALPACA: ${{ inputs.require-alpaca }}
+      run: |
+        fail() {
+          echo "::error title=$1::$2"
+          echo ""
+          echo "  ✗ $1"
+          echo "    $2"
+          echo ""
+          echo "    Fix it here: https://github.com/${REPO}/settings/secrets/actions"
+          echo "    Click $1 → Update secret, paste the value, press Update secret."
+          echo "    Nothing else to do: the next run picks it up."
+          echo ""
+          exit 1
+        }
+
+        case "${DATABASE_URL}" in
+          "")
+            fail DATABASE_URL "Not set. It is the whole line from the Neon dashboard's \"Connection string\" box."
+            ;;
+          postgres://*|postgresql://*)
+            ;;
+          npg_*)
+            fail DATABASE_URL "This is only the password. Copy the whole \"Connection string\" line above it — it starts with postgresql:// and ends with the database name."
+            ;;
+          *)
+            fail DATABASE_URL "Not a connection string. It must start with postgresql:// and look like postgresql://neondb_owner:PASSWORD@ep-something.us-east-2.aws.neon.tech/neondb?sslmode=require"
+            ;;
+        esac
+
+        if [ "${REQUIRE_ALPACA}" != "true" ]; then
+          echo "  ✓ DATABASE_URL is a connection string"
+          exit 0
+        fi
+
+        case "${ALPACA_API_KEY_ID}" in
+          "") fail ALPACA_API_KEY_ID "Not set. Alpaca → API Keys, on the paper account. The ID is the short value starting PK." ;;
+          PK*|AK*) ;;
+          *) fail ALPACA_API_KEY_ID "Does not look like an Alpaca key ID — those start with PK. The longer value is the secret, and belongs in ALPACA_API_SECRET_KEY." ;;
+        esac
+
+        if [ -z "${ALPACA_API_SECRET_KEY}" ]; then
+          fail ALPACA_API_SECRET_KEY "Not set. It is the longer value shown once when the Alpaca paper key was created."
+        fi
+
+        echo "  ✓ DATABASE_URL is a connection string"
+        echo "  ✓ Alpaca key ID and secret present"
