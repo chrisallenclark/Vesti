@@ -22,7 +22,8 @@
     "backtest": "npm run backtest -w @vesti/lab",
     "report": "tsx scripts/report.mts",
     "dashboard": "tsx --env-file-if-exists=.env scripts/dashboard.mts",
-    "app-url": "tsx --env-file-if-exists=.env scripts/app-url.mts"
+    "app-url": "tsx --env-file-if-exists=.env scripts/app-url.mts",
+    "deploy:config": "tsx --env-file-if-exists=.env scripts/vercel-env.mts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

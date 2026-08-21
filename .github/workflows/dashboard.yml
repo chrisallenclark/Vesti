@@ -1,0 +1,76 @@
+# Give the deployed dashboard its database URL.
+#
+# The desk is hosted on Vercel and needs one setting, `DATABASE_URL_APP`. That
+# value is derived rather than issued — an HMAC over the owner connection string
+# — so it exists nowhere anybody can copy it from, and the only ways to get it
+# into a hosting dashboard by hand involve a person reading a live credential
+# off a screen and pasting it somewhere.
+#
+# So this posts it straight to Vercel's API instead. Nothing is printed: the log
+# shows the project it went to and the names of the variables that were set, and
+# never a value. Run it again after rotating the database password — the derived
+# password changes with it, and the dashboard would otherwise start failing
+# authentication against a database it can plainly reach.
+name: Dashboard — send it the settings
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: "Vercel project name (leave blank if you only have one)"
+        required: false
+        default: ""
+  push:
+    paths: [".github/dashboard-request"]
+
+concurrency:
+  group: dashboard-${{ github.repository }}
+  cancel-in-progress: true
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_TEAM_ID: ${{ secrets.VERCEL_TEAM_ID }}
+      VERCEL_PROJECT: ${{ inputs.project }}
+      VESTI_PASSCODE: ${{ secrets.VESTI_PASSCODE }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The database URL has to be a connection string here for the same reason
+      # as everywhere else, and the token is the one thing this workflow cannot
+      # do without.
+      - uses: ./.github/actions/secrets-check
+        with:
+          require-alpaca: "false"
+
+      - name: Check the Vercel token
+        run: |
+          if [ -z "${VERCEL_TOKEN}" ]; then
+            echo "::error title=VERCEL_TOKEN::Not set."
+            echo ""
+            echo "  ✗ VERCEL_TOKEN is not set"
+            echo ""
+            echo "    In Vercel: your avatar (top right) → Account Settings → Tokens"
+            echo "    → Create Token. Scope it to your account, no expiry needed."
+            echo ""
+            echo "    Then: https://github.com/${{ github.repository }}/settings/secrets/actions"
+            echo "    → New repository secret → name it VERCEL_TOKEN → paste → Add secret."
+            echo ""
+            exit 1
+          fi
+          echo "  ✓ VERCEL_TOKEN present"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Send Vercel the settings
+        run: npm run deploy:config
